@@ -4,7 +4,7 @@
 ## Author: Gloom
 ## Version: @project-version@
 ## Dependencies: GloomsHub
-## X-Website: https://github.com/HandofDevastation/GloomsOverlays
+## X-Website: https://github.com/GloomSuite/GloomsOverlays
 
 # ⚠ DO NOT RENAME THESE TWO GLOBALS.
 # The addon folder was renamed VibeOverlay → GloomsOverlays in Phase E. WoW keys

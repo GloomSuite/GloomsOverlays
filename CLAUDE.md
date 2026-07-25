@@ -74,4 +74,4 @@ globals ever *do* get renamed, it needs a real migration shim, not a find-and-re
 Symlinked into the client at `…/Interface/AddOns/GloomsOverlays`. QA by the owner (non-dev): ONE
 copy-paste step at a time, verify before claiming, BugSack error text first. New files/assets
 need a full client RESTART (not /reload). Ships via BigWigs packager → GitHub Releases (repo
-`HandofDevastation/GloomsOverlays`), WoWup.
+`GloomSuite/GloomsOverlays`), WoWup.

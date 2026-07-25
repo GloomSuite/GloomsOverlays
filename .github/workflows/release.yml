@@ -8,7 +8,7 @@ on:
     tags:
       - "**"
 
-# ★ REQUIRED — do not delete. The HandofDevastation org sets
+# ★ REQUIRED — do not delete. The GloomSuite org sets
 #   default_workflow_permissions: read, so a workflow without this block cannot
 #   create a release and the run fails at publish time.
 permissions:
