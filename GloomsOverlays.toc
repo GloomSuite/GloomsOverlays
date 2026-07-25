@@ -1,0 +1,22 @@
+## Interface: 120007
+## Title: Gloom's Overlays
+## Notes: Cosmetic overlays and buff-triggered effects for WoW Midnight. Part of the Gloom Suite.
+## Author: Gloom
+## Version: @project-version@
+## Dependencies: GloomsHub
+## X-Website: https://github.com/HandofDevastation/GloomsOverlays
+
+# ⚠ DO NOT RENAME THESE TWO GLOBALS.
+# The addon folder was renamed VibeOverlay → GloomsOverlays in Phase E. WoW keys
+# SavedVariables off the FOLDER name, so the save files were copied to
+# GloomsOverlays.lua alongside the originals (account level + 22 characters).
+# Keeping the GLOBAL names unchanged is what lets those copies load as-is, with
+# zero Lua migration — 12 characters ride non-Default profiles (Goldset/Empty)
+# that live in the per-character file. Renaming these silently resets all of it.
+# The old VibeOverlay.lua save files stay on disk as the rollback.
+## SavedVariables: VibeOverlayDB
+## SavedVariablesPerCharacter: VibeOverlayDBChar
+
+GloomsOverlays.lua
+GloomsOverlays_Editor.lua
+GloomsOverlays_Preview.lua
