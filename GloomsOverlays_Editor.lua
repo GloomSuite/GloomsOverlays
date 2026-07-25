@@ -1,1036 +1,895 @@
 -- ============================================================
 -- GloomsOverlays_Editor.lua
--- Overlay manager + per-overlay editor.
+-- The OVERLAYS tab of the Suite window (Phase E gate B).
+--
+-- The two old floating windows (GloomsOverlaysManager 400x520 and
+-- GloomsOverlaysEditor 460x560) are GONE. Their contents mount as ONE tab
+-- inside GloomsHub's shell, laid out the way Gloom's Bars lays out its tab
+-- (the owner 2026-07-24 — GB is the reference, not GA):
+--   • LEFT RAIL  — the GO mark, the shared profile block, and the overlay list.
+--     The profile decides what everything else edits, so it is never hidden.
+--   • RIGHT PANE — the selected overlay's settings, scrolling.
+--   • FOOTER     — Save & Apply + status, in-tab (CONTRACTS §2).
+-- Every widget comes from LibGloomSkin-1.0; the file-local MakeButton /
+-- MakeCheck / MakeEditBox / MakeSlider helpers (which WERE the native Blizzard
+-- chrome) are deleted. Window chrome, Escape and dragging belong to the shell.
 -- ============================================================
 
-local MGR_W, MGR_H   = 400, 520
-local EDIT_W, EDIT_H = 460, 560
-local CONTENT_W      = EDIT_W - 36
-local CONTENT_H      = 1080
+-- --------------------------------------------------------------------------
+-- Toolkit + tokens — CONSUMED from LibGloomSkin-1.0 (shipped by GloomsHub,
+-- our hard dependency, so it is always loaded first). Surface pinned in
+-- GloomsHub/docs/CONTRACTS.md §4.
+-- --------------------------------------------------------------------------
+local Skin = LibStub("LibGloomSkin-1.0")
+local UI = Skin.UI
+local COLOR, FONT = Skin.COLOR, Skin.FONT
+local TEXT, MUTE = COLOR.text, COLOR.mute
 
-local ManagerFrame, EditorFrame
-local RefreshManagerList, RefreshProfileDropdown
-local OpenEditor
+local newText, flatButton, flatEditBox = UI.newText, UI.flatButton, UI.flatEditBox
+local makeToggle, sliderRow, colorSwatch = UI.makeToggle, UI.sliderRow, UI.colorSwatch
+local makeScrollbar, attachTip, hLine = UI.makeScrollbar, UI.attachTip, UI.hLine
 
--- ============================================================
--- Utility helpers
--- ============================================================
+-- Every (Hub font, size) pair this tab draws BEYOND the Hub's own warm list — a
+-- cold (font file, size) pair renders BLANK on its first draw each session
+-- (CONTRACTS §4). Queued now; warmed with the Hub's batch at PLAYER_ENTERING_WORLD.
+-- Audited with the contract's own check (grep -ohE 'FONT\.\w+, [0-9.]+' *.lua):
+-- this tab draws title 16/17 · head 12/13 · body 10.5/11/12 · label 11, plus
+-- bodyM 11/12/13 indirectly (flatButton/attachTip) and body 12 (flatEditBox,
+-- dropdown rows). The Hub's base list covers title 17 · head 12 · body
+-- 10.5/11/12/13 · bodyM 11/12/13 — so only these three are missing.
+UI.RegisterWarmPairs({
+  { FONT.title, 16 },   -- the asset browser drawer's title
+  { FONT.head, 13 },    -- editor section headers
+  { FONT.label, 11 },   -- sliderRow value labels (Rotation, Alpha)
+})
 
-local function MakeLabel(parent, text, y, x)
-    local lbl = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lbl:SetPoint("TOPLEFT", x or 0, y)
-    lbl:SetText(text)
-    return lbl
+-- --------------------------------------------------------------------------
+-- Layout constants. The shell hands us a container of AT LEAST 860x626
+-- (CONTRACTS §2, PINNED). The old windows were 400 + 460 = exactly 860 with
+-- zero gutter, so their numbers are rebalanced rather than ported.
+-- --------------------------------------------------------------------------
+local RAIL_W    = 240     -- left rail: mark + profile + overlay list
+local FOOTER_H  = 44      -- the tab's own footer row
+local PAD       = 18      -- editor content inset
+-- 11 rows × 26 = 286px of list, leaving a gap above the Duplicate/Delete row
+-- pinned to the rail's bottom (rail is 582 tall: 626 content − the 44 footer).
+-- Matches the old manager window's capacity (400×520 fitted ~11).
+local LIST_ROWS = 11
+local LIST_ROW_H = 26
+-- Tall enough for the last Visibility toggle at -850 plus its 20px height.
+local CONTENT_H = 890     -- editor scroll-child height
+
+local container, rail, editorScroll, editorChild, editorBody, emptyNote
+local listScroll, listContent, statusText, countText
+local profileBlock
+local rowPool = {}
+local currentEditIndex
+
+-- Editor widgets hang on E rather than becoming file locals: this chunk would
+-- otherwise crowd Lua's 200-locals-per-function cap (the trap GA hit).
+local E = {}
+
+local RefreshList, SelectOverlay
+
+-- --------------------------------------------------------------------------
+-- Docked drawers (the asset browser lives in GloomsOverlays_Preview.lua).
+-- Parented to the CONTAINER so a drawer hides with the tab AND the window,
+-- and flipped to the left if docking right would run off-screen.
+-- --------------------------------------------------------------------------
+local drawers = {}
+
+function GloomsOverlays_RegisterDrawer(f)
+  drawers[#drawers + 1] = f
 end
 
-local function MakeEditBox(parent, y, x, w, h)
-    local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
-    box:SetSize(w or 80, h or 20)
-    box:SetPoint("TOPLEFT", x or 0, y)
-    box:SetAutoFocus(false)
-    box:SetMaxLetters(256)
-    return box
+function GloomsOverlays_CloseDrawers(keep)
+  for _, f in ipairs(drawers) do
+    if f ~= keep and f:IsShown() then f:Hide() end
+  end
 end
 
-local function MakeButton(parent, label, w, h)
-    local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-    btn:SetSize(w or 60, h or 22)
-    btn:SetText(label)
-    return btn
+function GloomsOverlays_DockDrawer(f)
+  if not container then return end
+  f:SetParent(container)
+  f:SetMovable(false)
+  f:SetClampedToScreen(false)
+  f:ClearAllPoints()
+  local pr, sw, fw = container:GetRight(), UIParent:GetRight(), (f:GetWidth() or 0)
+  if pr and sw and (pr + fw + 2) > sw then
+    f:SetPoint("TOPRIGHT", container, "TOPLEFT", 1, 0)     -- flip: dock on the left
+  else
+    f:SetPoint("TOPLEFT", container, "TOPRIGHT", -1, 0)    -- dock on the right (flush)
+  end
 end
 
-local function MakeCheck(parent, label, y, x)
-    local btn = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
-    btn:SetSize(20, 20)
-    btn:SetPoint("TOPLEFT", x or 0, y)
-    local lbl = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lbl:SetPoint("LEFT", btn, "RIGHT", 4, 0)
-    lbl:SetText(label)
-    return btn, lbl
+-- --------------------------------------------------------------------------
+-- Live-apply helpers — write into profile.overlays[currentEditIndex] and
+-- rebuild the live frames, exactly as the old editor did.
+-- --------------------------------------------------------------------------
+local function CurrentOverlay()
+  if not currentEditIndex then return nil end
+  local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
+  return profile and profile.overlays and profile.overlays[currentEditIndex]
 end
-
-local function SectionLabel(parent, text, y)
-    local lbl = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    lbl:SetPoint("TOPLEFT", 0, y)
-    lbl:SetText("|cffcccccc" .. text .. "|r")
-    return lbl
-end
-
-local function MakeSlider(parent, y, x, w, minVal, maxVal, step)
-    local slider = CreateFrame("Slider", nil, parent, "OptionsSliderTemplate")
-    slider:SetSize(w or (CONTENT_W - 80), 14)
-    slider:SetPoint("TOPLEFT", x or 20, y)
-    slider:SetMinMaxValues(minVal, maxVal)
-    slider:SetValueStep(step or 1)
-    slider:SetObeyStepOnDrag(true)
-    for _, child in ipairs({ slider:GetRegions() }) do
-        if child.GetText then child:SetText("") end
-    end
-    return slider
-end
-
--- ============================================================
--- Live-apply helpers
--- ============================================================
-
-local currentEditIndex = nil
 
 local function LiveApply(field, value)
-    if not currentEditIndex then return end
-    local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
-    local ov = profile and profile.overlays and profile.overlays[currentEditIndex]
-    if not ov then return end
-    ov[field] = value
-    GloomsOverlays_ApplyAll()
+  local ov = CurrentOverlay()
+  if not ov then return end
+  ov[field] = value
+  GloomsOverlays_ApplyAll()
 end
 
 local function LiveApplyMulti(tbl)
-    if not currentEditIndex then return end
-    local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
-    local ov = profile and profile.overlays and profile.overlays[currentEditIndex]
-    if not ov then return end
-    for k, v in pairs(tbl) do ov[k] = v end
-    GloomsOverlays_ApplyAll()
+  local ov = CurrentOverlay()
+  if not ov then return end
+  for k, v in pairs(tbl) do ov[k] = v end
+  GloomsOverlays_ApplyAll()
 end
 
--- ============================================================
--- MANAGER WINDOW
--- ============================================================
+local function SetStatus(text)
+  if statusText then statusText:SetText(text or "") end
+end
 
-ManagerFrame = CreateFrame("Frame", "GloomsOverlaysManager", UIParent, "BackdropTemplate")
-ManagerFrame:SetSize(MGR_W, MGR_H)
-ManagerFrame:SetPoint("CENTER")
-ManagerFrame:SetMovable(true)
-ManagerFrame:EnableMouse(true)
-ManagerFrame:RegisterForDrag("LeftButton")
-ManagerFrame:SetScript("OnDragStart", ManagerFrame.StartMoving)
-ManagerFrame:SetScript("OnDragStop",  ManagerFrame.StopMovingOrSizing)
-ManagerFrame:SetFrameStrata("DIALOG")
-ManagerFrame:SetFrameLevel(10)
-ManagerFrame:SetBackdrop({
-    bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-    tile=true, tileSize=32, edgeSize=32,
-    insets={ left=8, right=8, top=8, bottom=8 },
-})
-ManagerFrame:SetBackdropColor(0, 0, 0, 1)
-ManagerFrame:Hide()
+-- --------------------------------------------------------------------------
+-- Small local widget shapes built on the lib
+-- --------------------------------------------------------------------------
+local function label(parent, text, x, y, size, cc)
+  local fs = newText(parent, FONT.body, size or 12, cc or TEXT, "LEFT")
+  fs:SetPoint("TOPLEFT", x, y); fs:SetText(text)
+  return fs
+end
 
-local mgrTitle = ManagerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-mgrTitle:SetPoint("TOP", 0, -14)
-mgrTitle:SetText("|cff936bffGloom's Overlays|r — Overlays")
+local function sectionHead(parent, text, y)
+  local fs = newText(parent, FONT.head, 13, COLOR.purple, "LEFT")
+  fs:SetPoint("TOPLEFT", PAD, y); fs:SetText(text:upper())
+  local div = hLine(parent)
+  div:SetPoint("TOPLEFT", PAD, y - 18); div:SetPoint("TOPRIGHT", -PAD, y - 18)
+  return fs
+end
 
-local mgrClose = CreateFrame("Button", nil, ManagerFrame, "UIPanelCloseButton")
-mgrClose:SetPoint("TOPRIGHT", -4, -4)
-mgrClose:SetScript("OnClick", function() ManagerFrame:Hide() end)
+local function box(parent, w, h, x, y, onCommit)
+  local e = flatEditBox(parent, w, h or 22)
+  e:SetPoint("TOPLEFT", x, y)
+  e:SetMaxLetters(256)
+  e:SetScript("OnEnterPressed", function(self) self:ClearFocus(); onCommit(self) end)
+  e:HookScript("OnEditFocusLost", function(self) onCommit(self) end)
+  e:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+  return e
+end
 
--- ── Profile bar ───────────────────────────────────────────────
+-- A caret-art arrow button. The bundled Khand/GeneralSans faces have no
+-- ▲▼◄► glyphs (they render as tofu), so the nudge arrows use the family's
+-- caret PNG rotated, exactly like the accordion carets.
+local ROT = { right = 0, down = UI.CARET_DOWN, left = math.pi, up = math.pi / 2 }
+local function caretButton(parent, w, h, dir, x, y)
+  local b = flatButton(parent, w, h, COLOR.heroic, "", 11)
+  b:SetBase(0.2); b:SetPoint("TOPLEFT", x, y)
+  local t = b:CreateTexture(nil, "ARTWORK")
+  t:SetTexture(UI.CARET)
+  t:SetVertexColor(COLOR.orange.r, COLOR.orange.g, COLOR.orange.b)
+  t:SetSize(8, 8); t:SetPoint("CENTER"); t:SetRotation(ROT[dir])
+  return b
+end
 
-local profileLabel = ManagerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-profileLabel:SetPoint("TOPLEFT", 16, -38)
-profileLabel:SetText("Profile:")
+-- A labelled sliding switch (the lib toggle + its caption).
+local function toggleRow(parent, text, x, y, get, set)
+  local t = makeToggle(parent, get, set)
+  t:SetPoint("TOPLEFT", x, y)
+  local fs = newText(parent, FONT.body, 12, TEXT, "LEFT")
+  fs:SetPoint("LEFT", t, "RIGHT", 10, 0); fs:SetText(text)
+  return t
+end
 
-local profileDropdown = CreateFrame("Frame", "GloomsOverlaysProfileDropdown", ManagerFrame, "UIDropDownMenuTemplate")
-profileDropdown:SetPoint("TOPLEFT", 56, -28)
-UIDropDownMenu_SetWidth(profileDropdown, 140)
-
-RefreshProfileDropdown = function()
-    UIDropDownMenu_Initialize(profileDropdown, function(self, level)
-        local names  = GloomsOverlays_GetProfileNames()
-        local active = GloomsOverlays_GetActiveProfileName()
-        for _, name in ipairs(names) do
-            local info    = UIDropDownMenu_CreateInfo()
-            info.text     = name
-            info.value    = name
-            info.checked  = (name == active)
-            info.func     = function()
-                GloomsOverlays_SetActiveProfile(name)
-                UIDropDownMenu_SetSelectedValue(profileDropdown, name)
-                RefreshManagerList()
-                RefreshProfileDropdown()
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
+-- A row of mutually-exclusive choices (blend mode, strata, spin direction):
+-- flatButtons where the selected one is ORANGE (flatButton:SetActive).
+local function choiceRow(parent, choices, bw, bh, x, y, gap, onPick)
+  local btns, cx = {}, x
+  for _, c in ipairs(choices) do
+    local value, text = c[1], c[2] or c[1]
+    local b = flatButton(parent, bw, bh, COLOR.heroic, text, 11)
+    b:SetBase(0.2); b:SetPoint("TOPLEFT", cx, y)
+    b:SetScript("OnClick", function()
+      onPick(value)
+      for _, e in ipairs(btns) do e.b:SetActive(e.v == value) end
     end)
-    local active = GloomsOverlays_GetActiveProfileName and GloomsOverlays_GetActiveProfileName() or "Default"
-    UIDropDownMenu_SetSelectedValue(profileDropdown, active)
+    btns[#btns + 1] = { b = b, v = value }
+    cx = cx + bw + (gap or 4)
+  end
+  return {
+    sync = function(value)
+      for _, e in ipairs(btns) do e.b:SetActive(e.v == value) end
+    end,
+  }
 end
 
-local profileNewBtn    = MakeButton(ManagerFrame, "New",    44, 20)
-local profileCopyBtn   = MakeButton(ManagerFrame, "Copy",   44, 20)
-local profileRenameBtn = MakeButton(ManagerFrame, "Rename", 54, 20)
-local profileDeleteBtn = MakeButton(ManagerFrame, "Delete", 54, 20)
-profileNewBtn:SetPoint("TOPLEFT",    212, -38)
-profileCopyBtn:SetPoint("LEFT",   profileNewBtn,    "RIGHT", 4, 0)
-profileRenameBtn:SetPoint("LEFT", profileCopyBtn,   "RIGHT", 4, 0)
-profileDeleteBtn:SetPoint("LEFT", profileRenameBtn, "RIGHT", 4, 0)
+-- --------------------------------------------------------------------------
+-- LEFT RAIL — mark, profile block, overlay list
+-- --------------------------------------------------------------------------
+local function BuildRail(c)
+  rail = CreateFrame("Frame", nil, c)
+  rail:SetPoint("TOPLEFT", 0, 0)
+  rail:SetPoint("BOTTOMLEFT", 0, FOOTER_H)
+  rail:SetWidth(RAIL_W)
 
-profileNewBtn:SetScript("OnClick", function()
-    StaticPopupDialogs["GLOOMSOVERLAYS_NEW_PROFILE"] = {
-        text         = "New profile name:",
-        button1      = "Create",
-        button2      = "Cancel",
-        hasEditBox   = true,
-        maxLetters   = 64,
-        OnAccept     = function(self)
-            local name = self.EditBox:GetText():match("^%s*(.-)%s*$")
-            if name == "" then return end
-            local ok, err = GloomsOverlays_NewProfile(name)
-            if ok then
-                GloomsOverlays_SetActiveProfile(name)
-                RefreshManagerList()
-                RefreshProfileDropdown()
-            else
-                print("|cff936bffGloom's Overlays|r: " .. (err or "error"))
-            end
-        end,
-        timeout = 0, whileDead = true, hideOnEscape = true,
-    }
-    StaticPopup_Show("GLOOMSOVERLAYS_NEW_PROFILE")
-end)
+  local X, W = 14, RAIL_W - 28
 
-profileCopyBtn:SetScript("OnClick", function()
-    local srcName = GloomsOverlays_GetActiveProfileName()
-    StaticPopupDialogs["GLOOMSOVERLAYS_COPY_PROFILE"] = {
-        text         = "Copy '" .. srcName .. "' as:",
-        button1      = "Copy",
-        button2      = "Cancel",
-        hasEditBox   = true,
-        maxLetters   = 64,
-        OnAccept     = function(self)
-            local name = self.EditBox:GetText():match("^%s*(.-)%s*$")
-            if name == "" then return end
-            local ok, err = GloomsOverlays_NewProfile(name, srcName)
-            if ok then
-                GloomsOverlays_SetActiveProfile(name)
-                RefreshManagerList()
-                RefreshProfileDropdown()
-            else
-                print("|cff936bffGloom's Overlays|r: " .. (err or "error"))
-            end
-        end,
-        timeout = 0, whileDead = true, hideOnEscape = true,
-    }
-    StaticPopup_Show("GLOOMSOVERLAYS_COPY_PROFILE")
-end)
+  -- The GO mark + wordmark (the owner 2026-07-24: a small header mark, NOT a
+  -- splash/landing page). Mirrors how the GS monogram sits in the shell's
+  -- title bar. Art is 179x247 — shown at its native aspect.
+  local logo = rail:CreateTexture(nil, "ARTWORK")
+  logo:SetTexture("Interface\\AddOns\\GloomsOverlays\\Media\\ui\\logo.png")
+  logo:SetSize(18, 25)
+  logo:SetPoint("TOPLEFT", X, -12)
+  local mark = newText(rail, FONT.title, 17, { r = 1, g = 1, b = 1 }, "LEFT")
+  mark:SetPoint("LEFT", logo, "RIGHT", 9, 0); mark:SetText("GLOOM'S OVERLAYS")
 
-profileRenameBtn:SetScript("OnClick", function()
-    local current = GloomsOverlays_GetActiveProfileName()
-    StaticPopupDialogs["GLOOMSOVERLAYS_RENAME_PROFILE"] = {
-        text         = "Rename '" .. current .. "' to:",
-        button1      = "Rename",
-        button2      = "Cancel",
-        hasEditBox   = true,
-        maxLetters   = 64,
-        OnAccept     = function(self)
-            local name = self.EditBox:GetText():match("^%s*(.-)%s*$")
-            if name == "" then return end
-            local ok, err = GloomsOverlays_RenameProfile(current, name)
-            if ok then
-                RefreshManagerList()
-                RefreshProfileDropdown()
-            else
-                print("|cff936bffGloom's Overlays|r: " .. (err or "error"))
-            end
-        end,
-        timeout = 0, whileDead = true, hideOnEscape = true,
-    }
-    StaticPopup_Show("GLOOMSOVERLAYS_RENAME_PROFILE")
-end)
+  local d1 = hLine(rail); d1:SetPoint("TOPLEFT", X, -48); d1:SetPoint("TOPRIGHT", -X, -48)
 
-profileDeleteBtn:SetScript("OnClick", function()
-    local current = GloomsOverlays_GetActiveProfileName()
-    StaticPopupDialogs["GLOOMSOVERLAYS_DELETE_PROFILE"] = {
-        text       = "Delete profile '" .. current .. "'? This cannot be undone.",
-        button1    = "Delete",
-        button2    = "Cancel",
-        OnAccept   = function()
-            local ok, err = GloomsOverlays_DeleteProfile(current)
-            if ok then
-                RefreshManagerList()
-                RefreshProfileDropdown()
-            else
-                print("|cff936bffGloom's Overlays|r: " .. (err or "error"))
-            end
-        end,
-        timeout = 0, whileDead = true, hideOnEscape = true,
-    }
-    StaticPopup_Show("GLOOMSOVERLAYS_DELETE_PROFILE")
-end)
+  -- The shared profile mechanism (LibGloomSkin MINOR 3) — the SAME control
+  -- Gloom's Bars and Gloom's Auras use. Delete routes through the confirm modal.
+  profileBlock = UI.profileBlock(rail, W, {
+    noun   = "profile",
+    names  = function() return GloomsOverlays_GetProfileNames() end,
+    active = function() return GloomsOverlays_GetActiveProfileName() end,
+    switch = function(name) GloomsOverlays_SetActiveProfile(name) end,
+    create = function(name)
+      local ok, err = GloomsOverlays_NewProfile(name)
+      if ok then GloomsOverlays_SetActiveProfile(name) end
+      return ok, err
+    end,
+    copy = function(name)
+      local ok, err = GloomsOverlays_NewProfile(name, GloomsOverlays_GetActiveProfileName())
+      if ok then GloomsOverlays_SetActiveProfile(name) end
+      return ok, err
+    end,
+    rename = function(name)
+      return GloomsOverlays_RenameProfile(GloomsOverlays_GetActiveProfileName(), name)
+    end,
+    delete = function()
+      return GloomsOverlays_DeleteProfile(GloomsOverlays_GetActiveProfileName())
+    end,
+    -- Overlay indexes belong to the OUTGOING profile — drop the selection.
+    onChange = function()
+      GloomsOverlays_ApplyAll()
+      SelectOverlay(nil)
+      RefreshList()
+    end,
+  })
+  profileBlock.frame:SetPoint("TOPLEFT", X, -62)
 
--- ── Overlay list ──────────────────────────────────────────────
+  local d2 = hLine(rail); d2:SetPoint("TOPLEFT", X, -184); d2:SetPoint("TOPRIGHT", -X, -184)
 
-local newBtn = MakeButton(ManagerFrame, "+ New Overlay", 120, 24)
-newBtn:SetPoint("TOPLEFT", 16, -62)
+  -- OVERLAYS block.
+  local oh = newText(rail, FONT.head, 12, MUTE, "LEFT")
+  oh:SetPoint("TOPLEFT", X, -194); oh:SetText("OVERLAYS")
+  countText = newText(rail, FONT.body, 10.5, MUTE, "RIGHT")
+  countText:SetPoint("TOPRIGHT", -X, -194)
 
-local mgrScroll = CreateFrame("ScrollFrame", nil, ManagerFrame, "UIPanelScrollFrameTemplate")
-mgrScroll:SetSize(MGR_W - 50, MGR_H - 120)
-mgrScroll:SetPoint("TOPLEFT", 12, -92)
-
-local listContent = CreateFrame("Frame", nil, mgrScroll)
-listContent:SetSize(MGR_W - 50, 1)
-mgrScroll:SetScrollChild(listContent)
-
-local rowPool = {}
-
-local function GetOrCreateRow(index)
-    if not rowPool[index] then
-        local row = CreateFrame("Frame", nil, listContent)
-        row:SetSize(MGR_W - 60, 30)
-
-        row.enabledBox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-        row.enabledBox:SetSize(20, 20)
-        row.enabledBox:SetPoint("LEFT", 0, 0)
-
-        row.nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        row.nameText:SetPoint("LEFT", row.enabledBox, "RIGHT", 6, 0)
-        row.nameText:SetWidth(150)
-        row.nameText:SetJustifyH("LEFT")
-
-        row.editBtn = MakeButton(row, "Edit", 46, 22)
-        row.editBtn:SetPoint("LEFT", row.nameText, "RIGHT", 6, 0)
-
-        row.dupeBtn = MakeButton(row, "Dupe", 46, 22)
-        row.dupeBtn:SetPoint("LEFT", row.editBtn, "RIGHT", 4, 0)
-
-        row.deleteBtn = MakeButton(row, "Delete", 52, 22)
-        row.deleteBtn:SetPoint("LEFT", row.dupeBtn, "RIGHT", 4, 0)
-
-        rowPool[index] = row
-    end
-    return rowPool[index]
-end
-
-RefreshManagerList = function()
-    local profile  = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
-    local overlays = (profile and profile.overlays) or {}
-    if RefreshProfileDropdown then RefreshProfileDropdown() end
-    local yOffset = 0
-    for i, ov in ipairs(overlays) do
-        local row = GetOrCreateRow(i)
-        row:SetPoint("TOPLEFT", 0, -yOffset)
-        row:Show()
-
-        row.nameText:SetText(ov.name or ("Overlay " .. i))
-        row.enabledBox:SetChecked(ov.enabled ~= false)
-
-        row.enabledBox:SetScript("OnClick", function(self)
-            overlays[i].enabled = self:GetChecked()
-            GloomsOverlays_ApplyAll()
-        end)
-
-        row.editBtn:SetScript("OnClick", function()
-            OpenEditor(i)
-        end)
-
-        row.dupeBtn:SetScript("OnClick", function()
-            local src  = overlays[i]
-            local copy = {}
-            for k, v in pairs(src) do
-                if type(v) == "table" then
-                    local t2 = {}
-                    for k2, v2 in pairs(v) do t2[k2] = v2 end
-                    copy[k] = t2
-                else
-                    copy[k] = v
-                end
-            end
-            copy.name = (src.name or "Overlay") .. " copy"
-            table.insert(overlays, i + 1, copy)
-            GloomsOverlays_ApplyAll()
-            RefreshManagerList()
-        end)
-
-        row.deleteBtn:SetScript("OnClick", function()
-            table.remove(overlays, i)
-            GloomsOverlays_ApplyAll()
-            RefreshManagerList()
-        end)
-
-        yOffset = yOffset + 34
-    end
-    for i = #overlays + 1, #rowPool do
-        rowPool[i]:Hide()
-    end
-    listContent:SetHeight(math.max(1, yOffset))
-end
-
-newBtn:SetScript("OnClick", function()
-    local profile  = GloomsOverlays_GetProfile()
+  local newBtn = flatButton(rail, W, 22, COLOR.purple, "+ New Overlay", 11)
+  newBtn:SetBase(0.35)
+  newBtn:SetPoint("TOPLEFT", X, -212)
+  newBtn:SetScript("OnClick", function()
+    local profile = GloomsOverlays_GetProfile()
     local overlays = profile.overlays
     local newIndex = #overlays + 1
     overlays[newIndex] = {
-        name      = "New Overlay " .. newIndex,
-        texture   = "",
-        x = 0, y = 0, width = 200, height = 200,
-        rotation  = 0,
-        alpha     = 1.0,
-        blendMode = "BLEND",
-        strata    = "HIGH",
-        flipH     = false,
-        flipV     = false,
-        spinSpeed = 0,
-        spinDir   = "cw",
-        tintR     = 1, tintG = 1, tintB = 1,
-        enabled   = true,
-        condition = "always",
+      name      = "New Overlay " .. newIndex,
+      texture   = "",
+      x = 0, y = 0, width = 200, height = 200,
+      rotation  = 0,
+      alpha     = 1.0,
+      blendMode = "BLEND",
+      strata    = "HIGH",
+      flipH     = false,
+      flipV     = false,
+      spinSpeed = 0,
+      spinDir   = "cw",
+      tintR     = 1, tintG = 1, tintB = 1,
+      enabled   = true,
+      condition = "always",
     }
-    RefreshManagerList()
-    OpenEditor(newIndex)
-end)
+    GloomsOverlays_ApplyAll()
+    RefreshList()
+    SelectOverlay(newIndex)
+  end)
+  attachTip(newBtn, "New overlay", "Creates a blank overlay in this profile and opens it for editing.")
 
--- ============================================================
--- EDITOR WINDOW
--- ============================================================
+  -- Scrolling overlay list.
+  listScroll = CreateFrame("ScrollFrame", nil, rail)
+  listScroll:SetPoint("TOPLEFT", X, -242)
+  listScroll:SetSize(W - 8, LIST_ROWS * LIST_ROW_H)
+  listScroll:EnableMouseWheel(true)
+  listScroll:SetScript("OnMouseWheel", function(self, delta)
+    local range = self:GetVerticalScrollRange()
+    self:SetVerticalScroll(math.max(0, math.min(range, self:GetVerticalScroll() - delta * LIST_ROW_H)))
+  end)
+  listContent = CreateFrame("Frame", nil, listScroll)
+  listContent:SetSize(W - 8, 1)
+  listScroll:SetScrollChild(listContent)
+  -- Anchor the TOP only and give it an explicit height: a BOTTOMRIGHT point is
+  -- measured from the RAIL's bottom, which ran the track off the end of the tab.
+  makeScrollbar(rail, listScroll, function(b)
+    b:SetPoint("TOPRIGHT", -X, -242)
+    b:SetHeight(LIST_ROWS * LIST_ROW_H)
+  end)
 
-EditorFrame = CreateFrame("Frame", "GloomsOverlaysEditor", UIParent, "BackdropTemplate")
-EditorFrame:SetSize(EDIT_W, EDIT_H)
-EditorFrame:SetPoint("CENTER", 20, 0)
-EditorFrame:SetMovable(true)
-EditorFrame:SetResizable(true)
-EditorFrame:SetResizeBounds(EDIT_W, 300, EDIT_W, 900)
-EditorFrame:EnableMouse(true)
-EditorFrame:RegisterForDrag("LeftButton")
-EditorFrame:SetScript("OnDragStart", EditorFrame.StartMoving)
-EditorFrame:SetScript("OnDragStop",  EditorFrame.StopMovingOrSizing)
-EditorFrame:SetFrameStrata("DIALOG")
-EditorFrame:SetFrameLevel(20)
-EditorFrame:SetBackdrop({
-    bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-    tile=true, tileSize=32, edgeSize=32,
-    insets={ left=8, right=8, top=8, bottom=8 },
-})
-EditorFrame:SetBackdropColor(0, 0, 0, 1)
-EditorFrame:Hide()
+  -- Duplicate / Delete act on the SELECTED overlay (the old per-row buttons
+  -- don't fit a 240 rail, and Edit is just clicking the row now).
+  local bw = (W - 4) / 2
+  E.dupeBtn = flatButton(rail, bw, 22, COLOR.heroic, "Duplicate", 11)
+  E.dupeBtn:SetBase(0.2); E.dupeBtn:SetPoint("BOTTOMLEFT", X, 6)
+  E.delBtn = flatButton(rail, bw, 22, COLOR.heroic, "Delete", 11)
+  E.delBtn:SetBase(0.2); E.delBtn:SetPoint("BOTTOMLEFT", X + bw + 4, 6)
 
-local edTitle = EditorFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-edTitle:SetPoint("TOP", 0, -14)
-edTitle:SetText("|cff936bffGloom's Overlays|r — Edit Overlay")
+  E.dupeBtn:SetScript("OnClick", function()
+    local profile = GloomsOverlays_GetProfile()
+    local overlays = profile and profile.overlays
+    local src = overlays and currentEditIndex and overlays[currentEditIndex]
+    if not src then return end
+    local copy = {}
+    for k, v in pairs(src) do
+      if type(v) == "table" then
+        local t2 = {}
+        for k2, v2 in pairs(v) do t2[k2] = v2 end
+        copy[k] = t2
+      else
+        copy[k] = v
+      end
+    end
+    copy.name = (src.name or "Overlay") .. " copy"
+    table.insert(overlays, currentEditIndex + 1, copy)
+    GloomsOverlays_ApplyAll()
+    RefreshList()
+    SelectOverlay(currentEditIndex + 1)
+  end)
 
-local edClose = CreateFrame("Button", nil, EditorFrame, "UIPanelCloseButton")
-edClose:SetPoint("TOPRIGHT", -4, -4)
-edClose:SetScript("OnClick", function() EditorFrame:Hide() end)
+  E.delBtn:SetScript("OnClick", function()
+    local profile = GloomsOverlays_GetProfile()
+    local overlays = profile and profile.overlays
+    local ov = overlays and currentEditIndex and overlays[currentEditIndex]
+    if not ov then return end
+    local idx = currentEditIndex
+    UI.confirm(("Delete the overlay \"%s\"?  This can't be undone."):format(ov.name or "?"), function()
+      table.remove(overlays, idx)
+      GloomsOverlays_ApplyAll()
+      SelectOverlay(nil)
+      RefreshList()
+    end)
+  end)
 
-local saveBtn   = MakeButton(EditorFrame, "Save & Apply", 110, 26)
-local cancelBtn = MakeButton(EditorFrame, "Cancel",        80, 26)
-saveBtn:SetPoint("BOTTOMLEFT", 16, 12)
-cancelBtn:SetPoint("LEFT", saveBtn, "RIGHT", 8, 0)
-cancelBtn:SetScript("OnClick", function() EditorFrame:Hide() end)
+  attachTip(E.dupeBtn, "Duplicate", "Copies the selected overlay, settings and all.")
+  attachTip(E.delBtn, "Delete", "Deletes the selected overlay. Asks you to confirm first.")
+end
 
-local edStatus = EditorFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-edStatus:SetPoint("LEFT", cancelBtn, "RIGHT", 12, 0)
-edStatus:SetWidth(200)
-edStatus:SetJustifyH("LEFT")
-edStatus:SetText(" ")
+local function GetOrCreateRow(index)
+  local row = rowPool[index]
+  if row then return row end
 
-local grip = CreateFrame("Button", nil, EditorFrame)
-grip:SetSize(16, 16)
-grip:SetPoint("BOTTOMRIGHT", -4, 4)
-grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-grip:SetScript("OnMouseDown", function() EditorFrame:StartSizing("BOTTOMRIGHT") end)
-grip:SetScript("OnMouseUp",   function() EditorFrame:StopMovingOrSizing() end)
+  row = CreateFrame("Button", nil, listContent)
+  row:SetSize(RAIL_W - 36, LIST_ROW_H)
 
-local edScroll = CreateFrame("ScrollFrame", nil, EditorFrame, "UIPanelScrollFrameTemplate")
-edScroll:SetPoint("TOPLEFT",     14,  -38)
-edScroll:SetPoint("BOTTOMRIGHT", -30,  46)
+  row.sel = row:CreateTexture(nil, "BACKGROUND"); row.sel:SetAllPoints()
+  row.sel:SetColorTexture(COLOR.purple.r, COLOR.purple.g, COLOR.purple.b, 0.28); row.sel:Hide()
+  local hl = row:CreateTexture(nil, "HIGHLIGHT"); hl:SetAllPoints()
+  hl:SetColorTexture(1, 1, 1, 0.07)
 
-local C = CreateFrame("Frame", nil, edScroll)
-C:SetSize(CONTENT_W, CONTENT_H)
-edScroll:SetScrollChild(C)
+  -- The switch is its own Button, so clicking it toggles WITHOUT selecting.
+  row.toggle = makeToggle(row,
+    function()
+      local profile = GloomsOverlays_GetProfile()
+      local ov = profile and profile.overlays and profile.overlays[row.index]
+      return ov and ov.enabled ~= false
+    end,
+    function(v)
+      local profile = GloomsOverlays_GetProfile()
+      local ov = profile and profile.overlays and profile.overlays[row.index]
+      if not ov then return end
+      ov.enabled = v and true or false
+      GloomsOverlays_ApplyAll()
+    end)
+  row.toggle:SetPoint("LEFT", 2, 0)
 
-EditorFrame:SetScript("OnSizeChanged", function(self, w, h)
-    C:SetWidth(w - 36)
-end)
+  row.text = newText(row, FONT.body, 12, TEXT, "LEFT")
+  row.text:SetPoint("LEFT", row.toggle, "RIGHT", 8, 0)
+  row.text:SetPoint("RIGHT", -4, 0)
+  row.text:SetWordWrap(false)
 
-local P = C
+  row:SetScript("OnClick", function(self)
+    if self.index then SelectOverlay(self.index) end
+  end)
 
--- ── Name ─────────────────────────────────────────────────────
-MakeLabel(P, "Overlay Name:", -10)
-local nameBox = MakeEditBox(P, -28, 0, CONTENT_W - 16)
-nameBox:SetScript("OnEnterPressed", function(self)
-    self:ClearFocus()
+  rowPool[index] = row
+  return row
+end
+
+RefreshList = function()
+  if not listContent then return end
+  local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
+  local overlays = (profile and profile.overlays) or {}
+
+  local y = 0
+  for i, ov in ipairs(overlays) do
+    local row = GetOrCreateRow(i)
+    row.index = i
+    row:ClearAllPoints(); row:SetPoint("TOPLEFT", 0, -y)
+    row.text:SetText(ov.name or ("Overlay " .. i))
+    row.toggle:refresh()
+    row.sel:SetShown(i == currentEditIndex)
+    row:Show()
+    y = y + LIST_ROW_H
+  end
+  for i = #overlays + 1, #rowPool do
+    rowPool[i].index = nil
+    rowPool[i]:Hide()
+  end
+  listContent:SetHeight(math.max(1, y))
+
+  if countText then countText:SetText(#overlays .. (#overlays == 1 and " overlay" or " overlays")) end
+  if profileBlock then profileBlock:refresh() end
+
+  local has = currentEditIndex ~= nil
+  if E.dupeBtn then E.dupeBtn:SetEnabled(has) end
+  if E.delBtn then E.delBtn:SetEnabled(has) end
+end
+
+-- --------------------------------------------------------------------------
+-- RIGHT PANE — the selected overlay's settings
+-- --------------------------------------------------------------------------
+local function BuildEditor(p)
+  -- ── Name ──────────────────────────────────────────────────
+  label(p, "Name", PAD, -14)
+  -- Nominal width; the TOPRIGHT anchor below is what actually sizes these two.
+  E.nameBox = box(p, 300, 24, PAD, -32, function(self)
     LiveApply("name", self:GetText():match("^%s*(.-)%s*$"))
-    RefreshManagerList()
-end)
-nameBox:SetScript("OnEditFocusLost", function(self)
-    LiveApply("name", self:GetText():match("^%s*(.-)%s*$"))
-    RefreshManagerList()
-end)
+    RefreshList()
+  end)
+  E.nameBox:SetPoint("TOPRIGHT", -PAD, -32)
 
--- ── Texture ───────────────────────────────────────────────────
-MakeLabel(P, "Texture (Suite media name, atlas name, file ID, or Interface\\ path):", -60)
-local texBox = MakeEditBox(P, -78, 0, CONTENT_W - 16)
-texBox:SetScript("OnEnterPressed", function(self)
-    self:ClearFocus()
+  -- ── Texture ───────────────────────────────────────────────
+  label(p, "Texture", PAD, -66)
+  E.browseBtn = flatButton(p, 92, 24, COLOR.purple, "Browse…", 11)
+  E.browseBtn:SetBase(0.35)
+  E.browseBtn:SetPoint("TOPRIGHT", -PAD, -84)
+  E.texBox = box(p, 300, 24, PAD, -84, function(self)
     LiveApply("texture", self:GetText():match("^%s*(.-)%s*$"))
-end)
-texBox:SetScript("OnEditFocusLost", function(self)
-    LiveApply("texture", self:GetText():match("^%s*(.-)%s*$"))
-end)
+  end)
+  E.texBox:SetPoint("TOPRIGHT", E.browseBtn, "TOPLEFT", -6, 0)
+  label(p, "Suite media name, atlas name, file ID, or Interface\\ path.", PAD, -112, 10.5, MUTE)
+  E.browseBtn:SetScript("OnClick", function()
+    if GloomsOverlays_OpenAssetBrowser then
+      GloomsOverlays_OpenAssetBrowser(E.texBox:GetText())
+    end
+  end)
+  attachTip(E.browseBtn, "Asset browser", "Opens the browser to preview textures, play spritesheets and keep favorites. Picking one drops it into this field.")
 
--- ── Size ──────────────────────────────────────────────────────
-SectionLabel(P, "Size", -114)
-MakeLabel(P, "Width:", -134)
-local widthBox = MakeEditBox(P, -152, 50, 60)
-MakeLabel(P, "Height:", -134, 130)
-local heightBox = MakeEditBox(P, -152, 180, 60)
-
-local function ApplySize()
-    local w = tonumber(widthBox:GetText())  or 200
-    local h = tonumber(heightBox:GetText()) or 200
-    LiveApplyMulti({ width = w, height = h })
-end
-widthBox:SetScript("OnEnterPressed",  function(self) self:ClearFocus() ApplySize() end)
-widthBox:SetScript("OnEditFocusLost", function() ApplySize() end)
-heightBox:SetScript("OnEnterPressed",  function(self) self:ClearFocus() ApplySize() end)
-heightBox:SetScript("OnEditFocusLost", function() ApplySize() end)
-
--- ── Position ──────────────────────────────────────────────────
-SectionLabel(P, "Position", -180)
-MakeLabel(P, "X:", -200)
-local xBox = MakeEditBox(P, -218, 18, 60)
-MakeLabel(P, "Y:", -200, 100)
-local yBox = MakeEditBox(P, -218, 118, 60)
-
-local function ApplyPosition()
-    local x = tonumber(xBox:GetText()) or 0
-    local y = tonumber(yBox:GetText()) or 0
-    LiveApplyMulti({ x = x, y = y })
-end
-xBox:SetScript("OnEnterPressed",  function(self) self:ClearFocus() ApplyPosition() end)
-xBox:SetScript("OnEditFocusLost", function() ApplyPosition() end)
-yBox:SetScript("OnEnterPressed",  function(self) self:ClearFocus() ApplyPosition() end)
-yBox:SetScript("OnEditFocusLost", function() ApplyPosition() end)
-
--- ── Nudge controls ────────────────────────────────────────────
-local nudgeRow = CreateFrame("Frame", nil, P)
-nudgeRow:SetSize(CONTENT_W, 30)
-nudgeRow:SetPoint("TOPLEFT", 0, -248)
-
-local nudgeIncrLbl = nudgeRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-nudgeIncrLbl:SetPoint("TOPLEFT", 0, 0)
-nudgeIncrLbl:SetText("Nudge:")
-
-local nudgeIncr = CreateFrame("EditBox", nil, nudgeRow, "InputBoxTemplate")
-nudgeIncr:SetSize(36, 18)
-nudgeIncr:SetPoint("LEFT", nudgeIncrLbl, "RIGHT", 4, 0)
-nudgeIncr:SetAutoFocus(false)
-nudgeIncr:SetText("1")
-nudgeIncr:SetMaxLetters(5)
-
-local nudgePxLbl = nudgeRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-nudgePxLbl:SetPoint("LEFT", nudgeIncr, "RIGHT", 4, 0)
-nudgePxLbl:SetText("px")
-
-local btnUp    = MakeButton(nudgeRow, "▲", 24, 20)
-local btnDown  = MakeButton(nudgeRow, "▼", 24, 20)
-local btnLeft  = MakeButton(nudgeRow, "◄", 24, 20)
-local btnRight = MakeButton(nudgeRow, "►", 24, 20)
-btnUp:SetPoint("LEFT",    nudgePxLbl, "RIGHT", 16, 0)
-btnDown:SetPoint("LEFT",  btnUp,      "RIGHT",  4, 0)
-btnLeft:SetPoint("LEFT",  btnDown,    "RIGHT",  4, 0)
-btnRight:SetPoint("LEFT", btnLeft,    "RIGHT",  4, 0)
-
--- ── Transform ─────────────────────────────────────────────────
-SectionLabel(P, "Transform", -290)
-MakeLabel(P, "Rotation:", -310)
-
-local rotSlider = MakeSlider(P, -328, 20, CONTENT_W - 80, -360, 360, 1)
-rotSlider:SetValue(0)
-
-local rotValLbl = P:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-rotValLbl:SetPoint("LEFT", rotSlider, "RIGHT", 6, 0)
-rotValLbl:SetText("0°")
-rotValLbl:SetWidth(36)
-
-local rotTickParent = CreateFrame("Frame", nil, P)
-rotTickParent:SetSize(CONTENT_W - 80, 10)
-rotTickParent:SetPoint("TOPLEFT", 20, -344)
-
-for i, frac in ipairs({ 0, 0.25, 0.5, 0.75, 1.0 }) do
-    local tick = rotTickParent:CreateTexture(nil, "OVERLAY")
-    tick:SetSize(1, 4)
-    tick:SetColorTexture(0.5, 0.5, 0.5, 0.8)
-    tick:SetPoint("TOPLEFT", (CONTENT_W - 80) * frac, 0)
-    local labels = { "-360°", "-180°", "0°", "180°", "360°" }
-    local tlbl = rotTickParent:CreateFontString(nil, "OVERLAY", "GameFontNormalTiny")
-    tlbl:SetPoint("TOP", tick, "BOTTOM", 0, -1)
-    tlbl:SetText(labels[i])
-    tlbl:SetTextColor(0.55, 0.55, 0.55)
-end
-
-rotSlider:SetScript("OnValueChanged", function(self, val)
-    val = math.floor(val + 0.5)
-    rotValLbl:SetText(val .. "°")
-    LiveApply("rotation", val)
-end)
-
-local rotResetBtn = MakeButton(P, "Reset", 46, 16)
-rotResetBtn:SetPoint("TOPLEFT", 0, -310)
-rotResetBtn:SetScript("OnClick", function()
-    rotSlider:SetValue(0)
-end)
-
--- ── Flip ──────────────────────────────────────────────────────
-local flipHBtn, _ = MakeCheck(P, "Flip Horizontal", -366, 0)
-local flipVBtn, _ = MakeCheck(P, "Flip Vertical",   -366, 160)
-
-flipHBtn:SetScript("OnClick", function(self)
-    LiveApply("flipH", self:GetChecked() and true or false)
-end)
-flipVBtn:SetScript("OnClick", function(self)
-    LiveApply("flipV", self:GetChecked() and true or false)
-end)
-
--- ── Spin animation ────────────────────────────────────────────
-MakeLabel(P, "Spin speed (°/sec, 0 = off):", -398)
-local spinSpeedBox = MakeEditBox(P, -416, 0, 60)
-spinSpeedBox:SetText("0")
-spinSpeedBox:SetMaxLetters(6)
-
-local function ApplySpin()
+  -- ── Size & position ───────────────────────────────────────
+  sectionHead(p, "Size & position", -142)
+  local function applySize()
     LiveApplyMulti({
-        spinSpeed = tonumber(spinSpeedBox:GetText()) or 0,
-        spinDir   = selectedSpinDir,
+      width  = tonumber(E.wBox:GetText()) or 200,
+      height = tonumber(E.hBox:GetText()) or 200,
     })
-end
+  end
+  label(p, "Width", PAD, -172)
+  E.wBox = box(p, 70, 22, PAD + 62, -174, applySize)
+  label(p, "Height", PAD + 168, -172)
+  E.hBox = box(p, 70, 22, PAD + 232, -174, applySize)
 
-spinSpeedBox:SetScript("OnEnterPressed",  function(self) self:ClearFocus() ApplySpin() end)
-spinSpeedBox:SetScript("OnEditFocusLost", function() ApplySpin() end)
+  local function applyPos()
+    LiveApplyMulti({
+      x = tonumber(E.xBox:GetText()) or 0,
+      y = tonumber(E.yBox:GetText()) or 0,
+    })
+  end
+  label(p, "X", PAD, -204)
+  E.xBox = box(p, 70, 22, PAD + 62, -206, applyPos)
+  label(p, "Y", PAD + 168, -204)
+  E.yBox = box(p, 70, 22, PAD + 232, -206, applyPos)
 
-MakeLabel(P, "Direction:", -398, 120)
-local spinDirs    = { "cw", "ccw" }
-local spinDirBtns = {}
-selectedSpinDir   = "cw"
+  -- Nudge: an increment plus four caret arrows that move the live overlay.
+  label(p, "Nudge", PAD, -238)
+  E.nudgeBox = flatEditBox(p, 46, 22)
+  E.nudgeBox:SetPoint("TOPLEFT", PAD + 62, -240)
+  E.nudgeBox:SetText("1"); E.nudgeBox:SetMaxLetters(5)
+  E.nudgeBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+  E.nudgeBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+  label(p, "px", PAD + 114, -238, 10.5, MUTE)
 
-local function SetSpinDir(d)
-    selectedSpinDir = d
-    for _, b in pairs(spinDirBtns) do b:Enable() end
-    spinDirBtns[d]:Disable()
-    ApplySpin()
-end
+  local function nudge(field, mult)
+    local ov = CurrentOverlay()
+    if not ov then return end
+    local step = (tonumber(E.nudgeBox:GetText()) or 1) * mult
+    ov[field] = (ov[field] or 0) + step
+    if field == "x" then E.xBox:SetText(tostring(ov.x)) else E.yBox:SetText(tostring(ov.y)) end
+    GloomsOverlays_ApplyAll()
+  end
+  local nx = PAD + 150
+  caretButton(p, 28, 22, "up",    nx,       -240):SetScript("OnClick", function() nudge("y",  1) end)
+  caretButton(p, 28, 22, "down",  nx + 32,  -240):SetScript("OnClick", function() nudge("y", -1) end)
+  caretButton(p, 28, 22, "left",  nx + 64,  -240):SetScript("OnClick", function() nudge("x", -1) end)
+  caretButton(p, 28, 22, "right", nx + 96,  -240):SetScript("OnClick", function() nudge("x",  1) end)
 
-local sdx = 190
-for _, d in ipairs(spinDirs) do
-    local btn = MakeButton(P, d == "cw" and "CW ↻" or "CCW ↺", 58, 20)
-    btn:SetPoint("TOPLEFT", sdx, -416)
-    btn:SetScript("OnClick", function() SetSpinDir(d) end)
-    spinDirBtns[d] = btn
-    sdx = sdx + 62
-end
-spinDirBtns["cw"]:Disable()
+  -- ── Transform ─────────────────────────────────────────────
+  sectionHead(p, "Transform", -282)
+  E.rotRow = sliderRow(p, -310, "Rotation", -360, 360, 1,
+    function() local ov = CurrentOverlay(); return ov and ov.rotation or 0 end,
+    function(v) LiveApply("rotation", math.floor(v + 0.5)) end,
+    function(v) return string.format("%d°", math.floor(v + 0.5)) end)
 
--- ── Appearance ────────────────────────────────────────────────
-SectionLabel(P, "Appearance", -446)
-MakeLabel(P, "Alpha:", -466)
-
-local alphaSlider = MakeSlider(P, -484, 20, CONTENT_W - 80, 0, 100, 1)
-alphaSlider:SetValue(100)
-
-local alphaValLbl = P:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-alphaValLbl:SetPoint("LEFT", alphaSlider, "RIGHT", 6, 0)
-alphaValLbl:SetText("100%")
-alphaValLbl:SetWidth(36)
-
-alphaSlider:SetScript("OnValueChanged", function(self, val)
-    val = math.floor(val + 0.5)
-    alphaValLbl:SetText(val .. "%")
-    LiveApply("alpha", val / 100)
-end)
-
--- ── Tint ──────────────────────────────────────────────────────
-MakeLabel(P, "Tint:", -510)
-
-local tintR, tintG, tintB = 1, 1, 1
-
-local tintSwatch = P:CreateTexture(nil, "OVERLAY")
-tintSwatch:SetSize(24, 14)
-tintSwatch:SetPoint("TOPLEFT", 38, -512)
-tintSwatch:SetColorTexture(1, 1, 1, 1)
-
-local function SetTint(r, g, b)
-    tintR, tintG, tintB = r, g, b
-    tintSwatch:SetColorTexture(r, g, b, 1)
-end
-
-local chooseColorBtn = MakeButton(P, "Choose Color\226\128\166", 110, 22)
-chooseColorBtn:SetPoint("TOPLEFT", 70, -508)
-
-chooseColorBtn:SetScript("OnClick", function()
-    local rOld, gOld, bOld = tintR, tintG, tintB
-
-    local function OnChange(restore)
-        local r, g, b
-        if restore then
-            r, g, b = rOld, gOld, bOld
-        else
-            r, g, b = ColorPickerFrame:GetColorRGB()
-        end
-        SetTint(r, g, b)
-        LiveApplyMulti({ tintR = r, tintG = g, tintB = b })
+  -- Degree ticks under the slider (the old editor's -360/-180/0/180/360 scale).
+  local ticks = CreateFrame("Frame", nil, p)
+  ticks:SetPoint("TOPLEFT", PAD, -344); ticks:SetPoint("TOPRIGHT", -PAD, -344)
+  ticks:SetHeight(12)
+  local TICK_LABELS = { "-360°", "-180°", "0°", "180°", "360°" }
+  local TICK_FRACS = { 0, 0.25, 0.5, 0.75, 1 }
+  local tickText = {}
+  for i = 1, #TICK_FRACS do
+    tickText[i] = newText(ticks, FONT.body, 10.5, MUTE, "CENTER")
+    tickText[i]:SetText(TICK_LABELS[i])
+  end
+  -- Placed against the row's LIVE width so they stay under the slider if the
+  -- shell ever grows the content area (CONTRACTS §2 allows it to).
+  ticks:SetScript("OnSizeChanged", function(self, w)
+    if not w or w <= 0 then return end
+    for i, frac in ipairs(TICK_FRACS) do
+      tickText[i]:ClearAllPoints()
+      tickText[i]:SetPoint("TOP", self, "TOPLEFT", frac * w, 0)
     end
+  end)
 
-    if ColorPickerFrame.SetupColorPickerAndShow then
-        ColorPickerFrame:SetupColorPickerAndShow({
-            r = tintR, g = tintG, b = tintB,
-            hasOpacity  = false,
-            swatchFunc  = function() OnChange(false) end,
-            cancelFunc  = function() OnChange(true)  end,
-        })
-    else
-        ColorPickerFrame:SetColorRGB(tintR, tintG, tintB)
-        ColorPickerFrame.previousValues = { tintR, tintG, tintB }
-        ColorPickerFrame.func           = function() OnChange(false) end
-        ColorPickerFrame.cancelFunc     = function() OnChange(true)  end
-        ColorPickerFrame.hasOpacity     = false
-        ColorPickerFrame:Hide()
-        ColorPickerFrame:Show()
-    end
-end)
+  E.rotReset = flatButton(p, 100, 20, COLOR.heroic, "Reset rotation", 11)
+  E.rotReset:SetBase(0.2); E.rotReset:SetPoint("TOPLEFT", PAD, -364)
+  E.rotReset:SetScript("OnClick", function()
+    LiveApply("rotation", 0)
+    E.rotRow:refresh()
+  end)
 
-local resetTintBtn = MakeButton(P, "Reset", 46, 22)
-resetTintBtn:SetPoint("LEFT", chooseColorBtn, "RIGHT", 6, 0)
-resetTintBtn:SetScript("OnClick", function()
-    SetTint(1, 1, 1)
+  E.flipH = toggleRow(p, "Flip horizontal", PAD + 130, -364,
+    function() local ov = CurrentOverlay(); return ov and ov.flipH or false end,
+    function(v) LiveApply("flipH", v and true or false) end)
+  E.flipV = toggleRow(p, "Flip vertical", PAD + 320, -364,
+    function() local ov = CurrentOverlay(); return ov and ov.flipV or false end,
+    function(v) LiveApply("flipV", v and true or false) end)
+
+  label(p, "Spin speed", PAD, -400)
+  label(p, "°/sec — 0 turns spinning off", PAD, -418, 10.5, MUTE)
+  E.spinBox = box(p, 60, 22, PAD + 200, -402, function(self)
+    LiveApply("spinSpeed", tonumber(self:GetText()) or 0)
+  end)
+  E.spinBox:SetMaxLetters(6)
+  E.spinDir = choiceRow(p, { { "cw", "CW" }, { "ccw", "CCW" } }, 56, 22, PAD + 276, -402, 6,
+    function(v) LiveApply("spinDir", v) end)
+
+  -- ── Appearance ────────────────────────────────────────────
+  sectionHead(p, "Appearance", -452)
+  E.alphaRow = sliderRow(p, -480, "Alpha", 0, 100, 1,
+    function() local ov = CurrentOverlay(); return math.floor((ov and ov.alpha or 1) * 100 + 0.5) end,
+    function(v) LiveApply("alpha", math.floor(v + 0.5) / 100) end,
+    function(v) return string.format("%d%%", math.floor(v + 0.5)) end)
+
+  label(p, "Tint", PAD, -524)
+  E.tint = colorSwatch(p,
+    function()
+      local ov = CurrentOverlay()
+      return { ov and ov.tintR or 1, ov and ov.tintG or 1, ov and ov.tintB or 1 }
+    end,
+    function(c) LiveApplyMulti({ tintR = c[1], tintG = c[2], tintB = c[3] }) end)
+  E.tint.swatch:SetPoint("TOPLEFT", PAD + 62, -524)
+
+  E.tintReset = flatButton(p, 60, 20, COLOR.heroic, "Reset", 11)
+  E.tintReset:SetBase(0.2); E.tintReset:SetPoint("TOPLEFT", PAD + 100, -524)
+  E.tintReset:SetScript("OnClick", function()
     LiveApplyMulti({ tintR = 1, tintG = 1, tintB = 1 })
-end)
+    E.tint:refresh()
+  end)
 
-local classColorCheck,       _ = MakeCheck(P, "Player class color", -538,  0)
-local targetClassColorCheck, _ = MakeCheck(P, "Target class color", -538, 160)
-
-local function GetUnitClassColor(unit)
-    local _, classTag = UnitClass(unit)
-    if classTag and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classTag] then
-        return RAID_CLASS_COLORS[classTag]
+  -- Class coloring overrides the manual tint; the two are mutually exclusive
+  -- and lock the swatch while on (as the old editor did).
+  local function SetClassColor(which, on)
+    local ov = CurrentOverlay()
+    if not ov then return end
+    if on then
+      local unit = (which == "target") and "target" or "player"
+      local _, classTag = UnitClass(unit)
+      local cc = classTag and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classTag]
+      LiveApplyMulti({
+        useClassColor  = (which == "player") or nil,
+        useTargetColor = (which == "target") or nil,
+        tintR = cc and cc.r or 1, tintG = cc and cc.g or 1, tintB = cc and cc.b or 1,
+      })
+    else
+      LiveApply(which == "target" and "useTargetColor" or "useClassColor", false)
     end
+    E.syncTint()
+  end
+
+  E.classPlayer = toggleRow(p, "Player class color", PAD, -556,
+    function() local ov = CurrentOverlay(); return ov and ov.useClassColor == true end,
+    function(v) if v then SetClassColor("target", false) end; SetClassColor("player", v) end)
+  E.classTarget = toggleRow(p, "Target class color", PAD + 280, -556,
+    function() local ov = CurrentOverlay(); return ov and ov.useTargetColor == true end,
+    function(v) if v then SetClassColor("player", false) end; SetClassColor("target", v) end)
+
+  function E.syncTint()
+    local ov = CurrentOverlay()
+    local locked = ov and (ov.useClassColor == true or ov.useTargetColor == true)
+    E.tint:refresh()
+    E.tint.swatch:SetEnabled(not locked)
+    E.tint.swatch:SetAlpha(locked and 0.35 or 1)
+    E.tintReset:SetEnabled(not locked)
+    E.classPlayer:refresh()
+    E.classTarget:refresh()
+  end
+
+  label(p, "Blend mode", PAD, -592)
+  E.blend = choiceRow(p, { { "BLEND" }, { "ADD" }, { "MOD" } }, 62, 20, PAD + 200, -592, 6,
+    function(v) LiveApply("blendMode", v) end)
+
+  -- ── Layer ─────────────────────────────────────────────────
+  sectionHead(p, "Layer (z-order)", -628)
+  label(p, "BACKGROUND sits below the UI · HIGH above most of it · TOOLTIP above everything.",
+    PAD, -656, 10.5, MUTE)
+  local STRATA = { "BACKGROUND", "LOW", "MEDIUM", "HIGH", "DIALOG", "FULLSCREEN", "TOOLTIP" }
+  local strataBtns = {}
+  local sx = PAD
+  for i, s in ipairs(STRATA) do
+    local b = flatButton(p, 74, 20, COLOR.heroic, s == "FULLSCREEN" and "FSCREEN" or s, 11)
+    b:SetBase(0.2)
+    b:SetPoint("TOPLEFT", sx, i <= 4 and -678 or -702)
+    b:SetScript("OnClick", function()
+      LiveApply("strata", s)
+      for _, e in ipairs(strataBtns) do e.b:SetActive(e.v == s) end
+    end)
+    strataBtns[#strataBtns + 1] = { b = b, v = s }
+    sx = (i == 4) and PAD or (sx + 78)
+  end
+  E.strata = { sync = function(value)
+    for _, e in ipairs(strataBtns) do e.b:SetActive(e.v == value) end
+  end }
+
+  -- ── Visibility ────────────────────────────────────────────
+  sectionHead(p, "Visibility", -738)
+  label(p, "The overlay shows while ANY switched-on condition is true.", PAD, -766, 10.5, MUTE)
+
+  local COND = {
+    { "always",   "Always visible" },
+    { "combat",   "In combat" },
+    { "nocombat", "Out of combat" },
+    { "target",   "Target selected" },
+    { "casting",  "While casting" },
+  }
+  local function conditionSet()
+    local ov = CurrentOverlay()
+    local set = {}
+    for word in ((ov and ov.condition) or "always"):gmatch("[^,]+") do set[word] = true end
+    return set
+  end
+  E.cond = {}
+  for i, c in ipairs(COND) do
+    local key = c[1]
+    local col, rowN = (i - 1) % 2, math.floor((i - 1) / 2)
+    E.cond[i] = toggleRow(p, c[2], PAD + col * 280, -790 - rowN * 30,
+      function() return conditionSet()[key] == true end,
+      function(v)
+        local set = conditionSet()
+        set[key] = v or nil
+        local parts = {}
+        for _, cc in ipairs(COND) do
+          if set[cc[1]] then parts[#parts + 1] = cc[1] end
+        end
+        LiveApply("condition", #parts > 0 and table.concat(parts, ",") or "always")
+        for _, t in ipairs(E.cond) do t:refresh() end
+      end)
+  end
 end
 
-local function ApplyClassColor(unit)
-    local c = GetUnitClassColor(unit or "player")
-    if c then
-        SetTint(c.r, c.g, c.b)
-        LiveApplyMulti({
-            tintR          = c.r,
-            tintG          = c.g,
-            tintB          = c.b,
-            useClassColor  = (unit ~= "target") and true or nil,
-            useTargetColor = (unit == "target")  and true or nil,
-        })
-    end
+-- Populate every control from the overlay at `index` (nil clears the pane).
+SelectOverlay = function(index)
+  local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
+  local ov = index and profile and profile.overlays and profile.overlays[index]
+  currentEditIndex = ov and index or nil
+
+  if not ov then
+    if editorBody then editorBody:Hide() end
+    if E.editorBar then E.editorBar:Hide() end
+    if emptyNote then emptyNote:Show() end
+    RefreshList()
+    SetStatus("")
+    return
+  end
+
+  if emptyNote then emptyNote:Hide() end
+  if editorBody then editorBody:Show() end
+  if E.editorBar then E.editorBar:Show() end
+
+  E.nameBox:SetText(ov.name or "")
+  E.texBox:SetText(ov.texture or "")
+  E.wBox:SetText(tostring(ov.width or 200))
+  E.hBox:SetText(tostring(ov.height or 200))
+  E.xBox:SetText(tostring(ov.x or 0))
+  E.yBox:SetText(tostring(ov.y or 0))
+  E.spinBox:SetText(tostring(ov.spinSpeed or 0))
+
+  E.rotRow:refresh()
+  E.alphaRow:refresh()
+  E.flipH:refresh()
+  E.flipV:refresh()
+  E.spinDir.sync(ov.spinDir or "cw")
+  E.blend.sync(ov.blendMode or "BLEND")
+  E.strata.sync(ov.strata or "HIGH")
+  E.syncTint()
+  for _, t in ipairs(E.cond) do t:refresh() end
+
+  if editorScroll then editorScroll:SetVerticalScroll(0) end
+  RefreshList()
+  SetStatus("")
 end
 
-local function LockTintControls(locked)
-    if locked then
-        chooseColorBtn:Disable()
-        resetTintBtn:Disable()
-    else
-        chooseColorBtn:Enable()
-        resetTintBtn:Enable()
-    end
+-- --------------------------------------------------------------------------
+-- The tab
+-- --------------------------------------------------------------------------
+local function BuildTab(c)
+  container = c
+
+  BuildRail(c)
+
+  -- Seam between the rail and the editor pane.
+  local vdiv = c:CreateTexture(nil, "ARTWORK")
+  vdiv:SetColorTexture(COLOR.rim.r, COLOR.rim.g, COLOR.rim.b, COLOR.rim.a or 0.1)
+  vdiv:SetWidth(1)
+  vdiv:SetPoint("TOPLEFT", RAIL_W, 0); vdiv:SetPoint("BOTTOMLEFT", RAIL_W, FOOTER_H)
+
+  -- Editor pane: a scroll frame holding the settings column.
+  editorScroll = CreateFrame("ScrollFrame", nil, c)
+  editorScroll:SetPoint("TOPLEFT", RAIL_W + 1, -1)
+  editorScroll:SetPoint("BOTTOMRIGHT", -10, FOOTER_H + 1)
+  editorScroll:EnableMouseWheel(true)
+  editorScroll:SetScript("OnMouseWheel", function(self, delta)
+    local range = self:GetVerticalScrollRange()
+    self:SetVerticalScroll(math.max(0, math.min(range, self:GetVerticalScroll() - delta * 42)))
+  end)
+  editorChild = CreateFrame("Frame", nil, editorScroll)
+  editorChild:SetSize(math.max(10, editorScroll:GetWidth()), CONTENT_H)
+  editorScroll:SetScrollChild(editorChild)
+  editorScroll:SetScript("OnSizeChanged", function(_, w)
+    if w and w > 0 then editorChild:SetWidth(w) end
+  end)
+  -- Hidden along with the editor body: an empty pane has nothing to scroll.
+  E.editorBar = makeScrollbar(c, editorScroll, function(b)
+    b:SetPoint("TOPRIGHT", -4, -2); b:SetPoint("BOTTOMRIGHT", -4, FOOTER_H + 2)
+  end)
+
+  -- Everything the editor draws lives on `editorBody` so the whole pane can be
+  -- hidden at once when nothing is selected.
+  editorBody = CreateFrame("Frame", nil, editorChild)
+  editorBody:SetAllPoints()
+  BuildEditor(editorBody)
+  editorBody:Hide()
+
+  emptyNote = newText(c, FONT.body, 12, MUTE, "CENTER")
+  emptyNote:SetPoint("CENTER", editorScroll, "CENTER", 0, 0)
+  emptyNote:SetText("Select an overlay on the left to edit it,\nor create one with + New Overlay.")
+
+  -- ── The tab's own footer row (CONTRACTS §2) ───────────────
+  local fdiv = hLine(c)
+  fdiv:SetPoint("BOTTOMLEFT", 0, FOOTER_H); fdiv:SetPoint("BOTTOMRIGHT", 0, FOOTER_H)
+
+  local saveBtn = flatButton(c, 130, 26, COLOR.purple, "Save & Apply", 12)
+  saveBtn:SetBase(0.35)
+  saveBtn:SetPoint("BOTTOMLEFT", RAIL_W + PAD, 9)
+  saveBtn:SetScript("OnClick", function()
+    local ov = CurrentOverlay()
+    if not ov then return end
+    ov.name    = E.nameBox:GetText():match("^%s*(.-)%s*$")
+    ov.texture = E.texBox:GetText():match("^%s*(.-)%s*$")
+    ov.width   = tonumber(E.wBox:GetText()) or 200
+    ov.height  = tonumber(E.hBox:GetText()) or 200
+    ov.x       = tonumber(E.xBox:GetText()) or 0
+    ov.y       = tonumber(E.yBox:GetText()) or 0
+    GloomsOverlays_ApplyAll()
+    RefreshList()
+    SetStatus("|cff20ba56Saved.|r")
+  end)
+  attachTip(saveBtn, "Save & Apply", "Commits the typed fields (name, texture, size, position). Everything else applies the moment you change it.")
+
+  statusText = newText(c, FONT.body, 11, MUTE, "LEFT")
+  statusText:SetPoint("LEFT", saveBtn, "RIGHT", 12, 0)
+  statusText:SetWidth(280)
+
+  -- OnShow/OnHide live on the CONTAINER: they fire as the tab gains/loses
+  -- visibility — window open/close AND tab switches (CONTRACTS §2).
+  c:HookScript("OnShow", function()
+    RefreshList()
+    if profileBlock then profileBlock:refresh(); profileBlock:note("") end
+  end)
+  c:HookScript("OnHide", function()
+    GloomsOverlays_CloseDrawers()
+  end)
+
+  SelectOverlay(nil)
 end
 
-classColorCheck:SetScript("OnClick", function(self)
-    if self:GetChecked() then
-        targetClassColorCheck:SetChecked(false)
-        LiveApply("useTargetColor", false)
-        ApplyClassColor("player")
-        LockTintControls(true)
-    else
-        LiveApply("useClassColor", false)
-        LockTintControls(false)
-    end
-end)
+-- --------------------------------------------------------------------------
+-- Cross-file entry points (the asset browser + the slash router use these)
+-- --------------------------------------------------------------------------
 
-targetClassColorCheck:SetScript("OnClick", function(self)
-    if self:GetChecked() then
-        classColorCheck:SetChecked(false)
-        LiveApply("useClassColor", false)
-        ApplyClassColor("target")
-        LockTintControls(true)
-    else
-        LiveApply("useTargetColor", false)
-        LockTintControls(false)
-    end
-end)
+-- Drop a texture name into the editor's Texture field and apply it live.
+function GloomsOverlays_SetTextureField(text)
+  if not (E.texBox and currentEditIndex) then return false end
+  E.texBox:SetText(text or "")
+  LiveApply("texture", (text or ""):match("^%s*(.-)%s*$"))
+  return true
+end
 
+function GloomsOverlays_HasSelection()
+  return currentEditIndex ~= nil
+end
+
+-- Called by the asset browser's "+ Save as New Overlay".
+function GloomsOverlays_SaveFromPreview(textureInput, sheetData)
+  if not VibeOverlayDB then
+    error("VibeOverlayDB not initialised")
+  end
+  local profile = GloomsOverlays_GetProfile()
+  local overlays = profile.overlays
+  local newIndex = #overlays + 1
+  overlays[newIndex] = {
+    name      = "New Overlay " .. newIndex,
+    texture   = textureInput or "",
+    x = 0, y = 0, width = 200, height = 200,
+    rotation  = 0,
+    alpha     = 1.0,
+    blendMode = "BLEND",
+    strata    = "HIGH",
+    flipH     = false,
+    flipV     = false,
+    spinSpeed = 0,
+    spinDir   = "cw",
+    tintR     = 1, tintG = 1, tintB = 1,
+    enabled   = true,
+    condition = "always",
+    sheet     = sheetData,
+  }
+  GloomsOverlays_ApplyAll()
+  GloomsHub:Open("overlays")
+  RefreshList()
+  SelectOverlay(newIndex)
+end
+
+-- The old "open the manager window" entry point — now a tab focus.
+function GloomsOverlays_OpenManager()
+  GloomsHub:ToggleWindow("overlays")
+end
+
+-- Keep a target-class-colored overlay following the current target.
 local targetColorFrame = CreateFrame("Frame")
 targetColorFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 targetColorFrame:SetScript("OnEvent", function()
-    local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
-    if not profile or not profile.overlays then return end
-    for _, ov in ipairs(profile.overlays) do
-        if ov.useTargetColor then
-            local c = GetUnitClassColor("target")
-            if c then
-                ov.tintR, ov.tintG, ov.tintB = c.r, c.g, c.b
-            else
-                ov.tintR, ov.tintG, ov.tintB = 1, 1, 1
-            end
-        end
+  local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
+  if not profile or not profile.overlays then return end
+  local touched = false
+  for _, ov in ipairs(profile.overlays) do
+    if ov.useTargetColor then
+      local _, classTag = UnitClass("target")
+      local cc = classTag and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classTag]
+      ov.tintR, ov.tintG, ov.tintB = cc and cc.r or 1, cc and cc.g or 1, cc and cc.b or 1
+      touched = true
     end
-    GloomsOverlays_ApplyAll()
-    if currentEditIndex and EditorFrame:IsShown() then
-        local ov = profile.overlays[currentEditIndex]
-        if ov and ov.useTargetColor then
-            SetTint(ov.tintR, ov.tintG, ov.tintB)
-        end
-    end
+  end
+  if not touched then return end
+  GloomsOverlays_ApplyAll()
+  local ov = CurrentOverlay()
+  if ov and ov.useTargetColor and E.syncTint then E.syncTint() end
 end)
 
--- ── Blend mode ────────────────────────────────────────────────
-MakeLabel(P, "Blend mode:", -552)
-local blendModes  = { "BLEND", "ADD", "MOD" }
-local blendBtns   = {}
-local selectedBlend = "BLEND"
-
-local function SetBlendMode(mode)
-    selectedBlend = mode
-    for _, b in pairs(blendBtns) do b:Enable() end
-    blendBtns[mode]:Disable()
-    LiveApply("blendMode", mode)
-end
-
-local bx = 100
-for _, mode in ipairs(blendModes) do
-    local btn = MakeButton(P, mode, 54, 20)
-    btn:SetPoint("TOPLEFT", bx, -570)
-    btn:SetScript("OnClick", function() SetBlendMode(mode) end)
-    blendBtns[mode] = btn
-    bx = bx + 58
-end
-
--- ── Layer (strata) ────────────────────────────────────────────
-SectionLabel(P, "Layer (z-order)", -600)
-local strataHint = P:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-strataHint:SetPoint("TOPLEFT", 0, -616)
-strataHint:SetWidth(CONTENT_W)
-strataHint:SetJustifyH("LEFT")
-strataHint:SetTextColor(0.55, 0.55, 0.55)
-strataHint:SetText("BACKGROUND = below UI   HIGH = above most UI   TOOLTIP = above everything")
-
-local strataOptions = { "BACKGROUND", "LOW", "MEDIUM", "HIGH", "DIALOG", "FULLSCREEN", "TOOLTIP" }
-local strataBtns    = {}
-local selectedStrata = "HIGH"
-
-local function SetStrata(s)
-    selectedStrata = s
-    for _, b in pairs(strataBtns) do b:Enable() end
-    strataBtns[s]:Disable()
-    LiveApply("strata", s)
-end
-
-local strataY1, strataY2 = -632, -654
-local strataXs = {}
-for i = 1, 4 do strataXs[i] = (i-1) * 62 end
-for i = 5, 7 do strataXs[i] = (i-5) * 62 end
-local strataYs = { strataY1, strataY1, strataY1, strataY1, strataY2, strataY2, strataY2 }
-
-for i, s in ipairs(strataOptions) do
-    local btn = MakeButton(P, s == "FULLSCREEN" and "FSCREEN" or s, 58, 18)
-    btn:SetPoint("TOPLEFT", strataXs[i], strataYs[i])
-    btn:SetScript("OnClick", function() SetStrata(s) end)
-    strataBtns[s] = btn
-end
-strataBtns["HIGH"]:Disable()
-
--- ── Visibility ────────────────────────────────────────────────
-SectionLabel(P, "Visibility  |cffaaaaaa(show if any checked condition is true)|r", -686)
-
-local condOptions = { "always", "combat", "nocombat", "target", "casting" }
-local condLabels  = { "Always visible", "In combat", "Out of combat", "Target selected", "While casting" }
-local condBtns    = {}
-
-local function GetConditionSet()
-    local set = {}
-    for i, opt in ipairs(condOptions) do
-        if condBtns[i]:GetChecked() then
-            set[opt] = true
-        end
-    end
-    return set
-end
-
-local function SetConditionSet(condStr)
-    local active = {}
-    for word in (condStr or "always"):gmatch("[^,]+") do
-        active[word] = true
-    end
-    local anyKnown = false
-    for _, opt in ipairs(condOptions) do
-        if active[opt] then anyKnown = true; break end
-    end
-    if not anyKnown then active["always"] = true end
-    for i, opt in ipairs(condOptions) do
-        condBtns[i]:SetChecked(active[opt] == true)
-    end
-end
-
-local function ApplyConditions()
-    local set = GetConditionSet()
-    local parts = {}
-    for _, opt in ipairs(condOptions) do
-        if set[opt] then parts[#parts+1] = opt end
-    end
-    local condStr = #parts > 0 and table.concat(parts, ",") or "always"
-    LiveApply("condition", condStr)
-end
-
-for i, opt in ipairs(condOptions) do
-    local btn, _ = MakeCheck(P, condLabels[i], -704 - (i-1)*24, 0)
-    btn:SetScript("OnClick", function() ApplyConditions() end)
-    condBtns[i] = btn
-end
-condBtns[1]:SetChecked(true)
-
--- ============================================================
--- OpenEditor
--- ============================================================
-
-OpenEditor = function(index)
-    local profile = GloomsOverlays_GetProfile()
-    local ov = profile and profile.overlays and profile.overlays[index]
-    if not ov then return end
-    currentEditIndex = index
-
-    nameBox:SetText(ov.name or "")
-    texBox:SetText(ov.texture or "")
-    widthBox:SetText(tostring(ov.width  or 200))
-    heightBox:SetText(tostring(ov.height or 200))
-    xBox:SetText(tostring(ov.x or 0))
-    yBox:SetText(tostring(ov.y or 0))
-
-    local rot = math.max(-360, math.min(360, ov.rotation or 0))
-    rotSlider:SetValue(rot)
-
-    alphaSlider:SetValue(math.floor((ov.alpha or 1.0) * 100 + 0.5))
-    flipHBtn:SetChecked(ov.flipH or false)
-    flipVBtn:SetChecked(ov.flipV or false)
-    spinSpeedBox:SetText(tostring(ov.spinSpeed or 0))
-    SetSpinDir(ov.spinDir or "cw")
-    SetTint(ov.tintR or 1, ov.tintG or 1, ov.tintB or 1)
-    local ucc = ov.useClassColor  == true
-    local utc = ov.useTargetColor == true
-    classColorCheck:SetChecked(ucc)
-    targetClassColorCheck:SetChecked(utc)
-    if ucc then
-        LockTintControls(true)
-        ApplyClassColor("player")
-    elseif utc then
-        LockTintControls(true)
-        ApplyClassColor("target")
-    else
-        LockTintControls(false)
-    end
-    SetBlendMode(ov.blendMode or "BLEND")
-    SetStrata(ov.strata or "HIGH")
-    SetConditionSet(ov.condition or "always")
-
-    edScroll:SetVerticalScroll(0)
-    edStatus:SetText(" ")
-    EditorFrame:Show()
-    EditorFrame:Raise()
-    EditorFrame:SetFrameLevel(20)
-end
-
--- ============================================================
--- Nudge button logic
--- ============================================================
-
-local function GetNudge()
-    return tonumber(nudgeIncr:GetText()) or 1
-end
-
-local function LiveNudge(field, delta)
-    if not currentEditIndex then return end
-    local profile = GloomsOverlays_GetProfile()
-    local ov = profile and profile.overlays and profile.overlays[currentEditIndex]
-    if not ov then return end
-    ov[field] = (ov[field] or 0) + delta
-    if field == "x" then xBox:SetText(tostring(ov.x))
-    else                  yBox:SetText(tostring(ov.y)) end
-    GloomsOverlays_ApplyAll()
-end
-
-btnUp:SetScript("OnClick",    function() LiveNudge("y",  GetNudge()) end)
-btnDown:SetScript("OnClick",  function() LiveNudge("y", -GetNudge()) end)
-btnRight:SetScript("OnClick", function() LiveNudge("x",  GetNudge()) end)
-btnLeft:SetScript("OnClick",  function() LiveNudge("x", -GetNudge()) end)
-
--- ============================================================
--- Save & Apply button
--- ============================================================
-
-saveBtn:SetScript("OnClick", function()
-    if not currentEditIndex then return end
-    local profile = GloomsOverlays_GetProfile()
-    local ov = profile and profile.overlays and profile.overlays[currentEditIndex]
-    if not ov then return end
-
-    ov.name    = nameBox:GetText():match("^%s*(.-)%s*$")
-    ov.texture = texBox:GetText():match("^%s*(.-)%s*$")
-    ov.width   = tonumber(widthBox:GetText())  or 200
-    ov.height  = tonumber(heightBox:GetText()) or 200
-    ov.x       = tonumber(xBox:GetText())      or 0
-    ov.y       = tonumber(yBox:GetText())      or 0
-
-    GloomsOverlays_ApplyAll()
-    RefreshManagerList()
-    edStatus:SetText("|cff44ff44Saved!|r")
-end)
-
--- ============================================================
--- Save as New Overlay (called from Preview panel)
--- ============================================================
-
-function GloomsOverlays_SaveFromPreview(textureInput, sheetData)
-    if not VibeOverlayDB then
-        error("VibeOverlayDB not initialised")
-    end
-    local profile  = GloomsOverlays_GetProfile()
-    local overlays = profile.overlays
-    local newIndex = #overlays + 1
-    overlays[newIndex] = {
-        name      = "New Overlay " .. newIndex,
-        texture   = textureInput or "",
-        x = 0, y = 0, width = 200, height = 200,
-        rotation  = 0,
-        alpha     = 1.0,
-        blendMode = "BLEND",
-        strata    = "HIGH",
-        flipH     = false,
-        flipV     = false,
-        spinSpeed = 0,
-        spinDir   = "cw",
-        tintR     = 1, tintG = 1, tintB = 1,
-        enabled   = true,
-        condition = "always",
-        sheet     = sheetData,
-    }
-    GloomsOverlays_ApplyAll()
-    RefreshManagerList()
-    ManagerFrame:Show()
-    ManagerFrame:Raise()
-    OpenEditor(newIndex)
-end
-
--- ============================================================
--- Expose open function for slash commands
--- ============================================================
-
-function GloomsOverlays_OpenManager()
-    RefreshProfileDropdown()
-    RefreshManagerList()
-    ManagerFrame:Show()
-    ManagerFrame:Raise()
-    ManagerFrame:SetFrameLevel(10)
-end
-
--- ============================================================
--- Esc key support
--- ============================================================
-
-tinsert(UISpecialFrames, "GloomsOverlaysEditor")
-tinsert(UISpecialFrames, "GloomsOverlaysManager")
+-- --------------------------------------------------------------------------
+-- Mount the OVERLAYS tab (CONTRACTS §2; id reserved, order 30). Registration
+-- is cheap and immediate; BuildTab runs ONCE, lazily, on first show. No
+-- `refresh` handler — the container's OnShow hook re-syncs on every focus.
+-- --------------------------------------------------------------------------
+GloomsHub:RegisterTab{
+  id    = "overlays",
+  title = "OVERLAYS",
+  order = 30,
+  build = BuildTab,
+}

@@ -289,7 +289,7 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
         hasTarget = UnitExists("target")
         isCasting = (UnitCastingInfo("player") ~= nil) or (UnitChannelInfo("player") ~= nil)
         GloomsOverlays_ApplyAll()
-        print("|cff936bffGloom's Overlays|r loaded. Type |cffcccccc/go|r for help.")
+        print("|cff936bffGloom's Overlays|r loaded. |cffcccccc/go|r opens the Overlays tab.")
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true
@@ -325,11 +325,22 @@ end)
 -- SLASH COMMANDS
 -- ============================================================
 
+-- Phase E gate B: the config renders ONLY inside the Suite window (the Overlays
+-- tab). Bare `/go` toggles that tab — the family pattern (`/gb`, `/ga`); the
+-- shell owns open/close/switch semantics (CONTRACTS §2). `list`, `debug` and
+-- `reload` stay chat-only. The old PLAYER_LOGIN slash-wrapping in
+-- GloomsOverlays_Preview.lua is gone: every branch lives here now.
 SLASH_GLOOMSOVERLAYS1 = "/go"
 SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
     msg = msg and msg:lower():match("^%s*(.-)%s*$") or ""
 
-    if msg == "reload" then
+    if msg == "" or msg == "overlays" or msg == "o" or msg == "config" then
+        GloomsHub:ToggleWindow("overlays")
+
+    elseif msg == "preview" or msg == "p" then
+        if GloomsOverlays_ToggleAssetBrowser then GloomsOverlays_ToggleAssetBrowser() end
+
+    elseif msg == "reload" then
         ReloadUI()
 
     elseif msg == "list" then
@@ -362,8 +373,8 @@ SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
 
     else
         print("|cff936bffGloom's Overlays|r commands:")
-        print("  |cffcccccc/go overlays|r  (or /go o)    — open overlay manager")
-        print("  |cffcccccc/go preview|r   (or /go p)    — open asset browser")
+        print("  |cffcccccc/go|r                         — open the Overlays tab")
+        print("  |cffcccccc/go preview|r   (or /go p)    — open the asset browser")
         print("  |cffcccccc/go list|r                    — list overlays in chat")
         print("  |cffcccccc/go debug|r                   — print live frame info")
         print("  |cffcccccc/go reload|r                  — reload the UI")
