@@ -1,6 +1,7 @@
 ## Interface: 120007
 ## Title: Gloom's Overlays
 ## Notes: Cosmetic overlays and buff-triggered effects for WoW Midnight. Part of the Gloom Suite.
+## IconTexture: Interface\AddOns\GloomsOverlays\Media\ui\logo.png
 ## Author: Gloom
 ## Version: @project-version@
 ## Dependencies: GloomsHub

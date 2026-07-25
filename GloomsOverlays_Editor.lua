@@ -239,10 +239,11 @@ local function BuildRail(c)
 
   -- The GO mark + wordmark (the owner 2026-07-24: a small header mark, NOT a
   -- splash/landing page). Mirrors how the GS monogram sits in the shell's
-  -- title bar. Art is 179x247 — shown at its native aspect.
+  -- title bar. Art is the 2026-07-25 set: 512×512 SQUARE, transparent, no baked-in
+  -- name text (that text was illegible at header size and read as an artifact).
   local logo = rail:CreateTexture(nil, "ARTWORK")
   logo:SetTexture("Interface\\AddOns\\GloomsOverlays\\Media\\ui\\logo.png")
-  logo:SetSize(18, 25)
+  logo:SetSize(26, 26)   -- square; ~the old 25 height, clear of the rail divider at -48
   logo:SetPoint("TOPLEFT", X, -12)
   local mark = newText(rail, FONT.title, 17, { r = 1, g = 1, b = 1 }, "LEFT")
   mark:SetPoint("LEFT", logo, "RIGHT", 9, 0); mark:SetText("GLOOM'S OVERLAYS")
