@@ -74,6 +74,7 @@ globals ever *do* get renamed, it needs a real migration shim, not a find-and-re
 Symlinked into the client at `…/Interface/AddOns/GloomsOverlays`. QA by the owner (non-dev): ONE
 copy-paste step at a time, verify before claiming, BugSack error text first.
 **★ `/reload` is enough, including for NEW files (the owner, 2026-07-25)** — the old
-"new files/assets → FULL CLIENT RESTART" rule is RETIRED suite-wide; home of record is
+"new files/assets → FULL CLIENT RESTART" rule is RETIRED suite-wide — **except FONTS, which
+WoW loads at launch and `/reload` genuinely cannot refresh.** Home of record is
 GloomsHub's `docs/HANDOFF.md` working agreement 6. Ships via BigWigs packager → GitHub Releases (repo
 `GloomSuite/GloomsOverlays`), WoWup.
