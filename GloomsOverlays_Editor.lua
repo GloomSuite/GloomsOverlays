@@ -20,7 +20,31 @@
 -- our hard dependency, so it is always loaded first). Surface pinned in
 -- GloomsHub/docs/CONTRACTS.md §4.
 -- --------------------------------------------------------------------------
-local Skin = LibStub("LibGloomSkin-1.0")
+-- --------------------------------------------------------------------------
+-- ★ SHARED-TOOLKIT VERSION GATE — see GloomsHub/docs/CONTRACTS.md §6.
+-- LibGloomSkin lives in GloomsHub and GROWS: each MINOR adds widgets this file
+-- may call. WoW's "## Dependencies: GloomsHub" only checks that the Hub is
+-- PRESENT, never that it is NEW ENOUGH — so a Hub a release or two behind would
+-- let this file load and then die on the first nil widget, spraying Lua errors
+-- at someone who has no idea what a MINOR is. Check first, and fail with ONE
+-- actionable sentence instead.
+-- ★ BUMP SKIN_NEEDS IN THE SAME COMMIT that first calls a newer widget.
+-- --------------------------------------------------------------------------
+local SKIN_MAJOR, SKIN_NEEDS = "LibGloomSkin-1.0", 3
+
+local Skin, skinMinor = LibStub(SKIN_MAJOR, true)
+if not Skin or (skinMinor or 0) < SKIN_NEEDS then
+  local found = Skin and ("v" .. tostring(skinMinor or 0)) or "none"
+  local warn = CreateFrame("Frame")
+  warn:RegisterEvent("PLAYER_LOGIN")
+  warn:SetScript("OnEvent", function(self)
+    self:UnregisterAllEvents()
+    print("|cffff7729Gloom's Overlays:|r please update |cff936bffGloom's Hub|r. This version of "
+      .. "Overlays needs a newer Hub toolkit (needs v" .. SKIN_NEEDS .. ", found " .. found
+      .. "), so the OVERLAYS tab is unavailable. Your overlays keep rendering normally.")
+  end)
+  return   -- chunk-level return: the tab is never registered; overlay RENDERING is untouched
+end
 local UI = Skin.UI
 local COLOR, FONT = Skin.COLOR, Skin.FONT
 local TEXT, MUTE = COLOR.text, COLOR.mute

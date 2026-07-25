@@ -12,7 +12,22 @@
 -- are deliberately unchanged (see the TOC's warning).
 -- ============================================================
 
-local Skin = LibStub("LibGloomSkin-1.0")
+-- --------------------------------------------------------------------------
+-- ★ SHARED-TOOLKIT VERSION GATE — see GloomsHub/docs/CONTRACTS.md §6.
+-- LibGloomSkin lives in GloomsHub and GROWS: each MINOR adds widgets this file
+-- may call. WoW's "## Dependencies: GloomsHub" only checks that the Hub is
+-- PRESENT, never that it is NEW ENOUGH — so a Hub a release or two behind would
+-- let this file load and then die on the first nil widget, spraying Lua errors
+-- at someone who has no idea what a MINOR is. Check first, and fail with ONE
+-- actionable sentence instead.
+-- ★ BUMP SKIN_NEEDS IN THE SAME COMMIT that first calls a newer widget.
+-- --------------------------------------------------------------------------
+local SKIN_MAJOR, SKIN_NEEDS = "LibGloomSkin-1.0", 3
+
+local Skin, skinMinor = LibStub(SKIN_MAJOR, true)
+if not Skin or (skinMinor or 0) < SKIN_NEEDS then
+  return   -- chunk-level return: the asset browser is skipped; _Editor.lua prints the one warning
+end
 local UI = Skin.UI
 local COLOR, FONT = Skin.COLOR, Skin.FONT
 local TEXT, MUTE = COLOR.text, COLOR.mute
