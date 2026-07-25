@@ -80,8 +80,11 @@ local PAD       = 18      -- editor content inset
 -- Matches the old manager window's capacity (400×520 fitted ~11).
 local LIST_ROWS = 11
 local LIST_ROW_H = 26
--- Tall enough for the last Visibility toggle at -850 plus its 20px height.
-local CONTENT_H = 890     -- editor scroll-child height
+-- Tall enough for the last Visibility toggle at -1004 plus its 20px height.
+-- (Grew by 50 when Size & position and Spin speed became slider rows — a slider
+-- is two lines where a typed box was one — and by another 80 when Layer gained
+-- the Level row and two more stratas.)
+local CONTENT_H = 1040    -- editor scroll-child height
 
 local container, rail, editorScroll, editorChild, editorBody, emptyNote
 local listScroll, listContent, statusText, countText
@@ -179,6 +182,59 @@ local function box(parent, w, h, x, y, onCommit)
   e:HookScript("OnEditFocusLost", function(self) onCommit(self) end)
   e:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
   return e
+end
+
+-- A number row: UI.sliderRow for dragging, plus a small edit box in the row's
+-- top-right corner so exact values stay TYPEABLE (suite to-do 2 — the family
+-- answer is both, not one or the other). Rotation and Alpha keep the plain
+-- read-only rows; these are the fields you type precise numbers into.
+--
+-- ★ `fmt` returns "" on purpose. sliderRow parks its own read-only value text
+-- at TOPRIGHT -18 — exactly where the edit box goes — so blanking it hands that
+-- slot over. The box IS the readout as well as the input.
+--
+-- The slider spans its PARENT (18px insets, fixed in the lib), so a caller that
+-- wants a narrower row gives it a slot frame rather than an x/width.
+-- `apply(v)` receives an integer already clamped to [minV, maxV].
+-- Returns { refresh, box }.
+local function numRow(parent, yTop, labelText, minV, maxV, get, apply, sub)
+  local h = {}
+
+  local ebox = flatEditBox(parent, 56, 18)
+  ebox:SetPoint("TOPRIGHT", -18, yTop + 3)   -- bottom lands on the slider's top edge
+  ebox:SetMaxLetters(6)
+  ebox:SetJustifyH("CENTER")
+  h.box = ebox
+
+  local row = sliderRow(parent, yTop, labelText, minV, maxV, 1, get,
+    function(v)
+      v = math.floor(v + 0.5)
+      apply(v)
+      ebox:SetText(tostring(v))
+    end,
+    function() return "" end,
+    sub)
+
+  function h:refresh()
+    row:refresh()                       -- `applying` guards this: no apply() call
+    ebox:SetText(tostring(get() or minV))
+  end
+
+  -- Typed entry commits on Enter or focus loss, like every other box in the
+  -- tab. Out-of-range numbers are clamped rather than kept, so the slider and
+  -- the box can never disagree about what the overlay is set to.
+  local function commit(self)
+    local v = tonumber(self:GetText())
+    if v then apply(math.max(minV, math.min(maxV, math.floor(v + 0.5)))) end
+    h:refresh()
+  end
+  ebox:SetScript("OnEnterPressed", function(self) self:ClearFocus(); commit(self) end)
+  ebox:HookScript("OnEditFocusLost", commit)
+  -- Restore BEFORE dropping focus: ClearFocus fires OnEditFocusLost, and a
+  -- commit of the half-typed text would defeat the escape.
+  ebox:SetScript("OnEscapePressed", function(self) h:refresh(); self:ClearFocus() end)
+
+  return h
 end
 
 -- A caret-art arrow button. The bundled Khand/GeneralSans faces have no
@@ -485,62 +541,87 @@ local function BuildEditor(p)
   attachTip(E.browseBtn, "Asset browser", "Opens the browser to preview textures, play spritesheets and keep favorites. Picking one drops it into this field.")
 
   -- ── Size & position ───────────────────────────────────────
+  -- TWO COLUMNS (the owner 2026-07-25: the pane is wide, stop stacking) —
+  -- SIZE on the left, POSITION on the right with the nudge arrows under it.
+  -- The columns are frames rather than x offsets because UI.sliderRow always
+  -- spans its PARENT (18px insets, fixed in the lib), so a half-width slider
+  -- means a half-width parent. Both are anchored to the pane's TOP edge, so
+  -- they split whatever width the shell hands us (CONTRACTS §2 lets it grow).
+  -- They start at PAD-18 = 0 so the lib's own inset lands their labels on the
+  -- same PAD gutter as every other row in this pane.
   sectionHead(p, "Size & position", -142)
-  local function applySize()
-    LiveApplyMulti({
-      width  = tonumber(E.wBox:GetText()) or 200,
-      height = tonumber(E.hBox:GetText()) or 200,
-    })
-  end
-  label(p, "Width", PAD, -172)
-  E.wBox = box(p, 70, 22, PAD + 62, -174, applySize)
-  label(p, "Height", PAD + 168, -172)
-  E.hBox = box(p, 70, 22, PAD + 232, -174, applySize)
 
-  local function applyPos()
-    LiveApplyMulti({
-      x = tonumber(E.xBox:GetText()) or 0,
-      y = tonumber(E.yBox:GetText()) or 0,
-    })
+  local COL_TOP, COL_GAP = -170, 8
+  local sizeCol = CreateFrame("Frame", nil, p)
+  sizeCol:SetPoint("TOPLEFT", PAD - 18, COL_TOP)
+  sizeCol:SetPoint("TOPRIGHT", p, "TOP", -COL_GAP / 2, COL_TOP)
+  sizeCol:SetHeight(130)
+
+  local posCol = CreateFrame("Frame", nil, p)
+  posCol:SetPoint("TOPLEFT", p, "TOP", COL_GAP / 2, COL_TOP)
+  posCol:SetPoint("TOPRIGHT", -(PAD - 18), COL_TOP)
+  posCol:SetHeight(130)
+
+  -- Ranges cover the owner's live profiles with headroom (his widest overlay is
+  -- 1500, his tallest 700, and nothing sits further than 550 from centre) and
+  -- stop where a screen overlay stops being one. The typed box is the answer
+  -- for precision, the arrows for the last pixel.
+  local function ovNum(field, default)
+    return function() local ov = CurrentOverlay(); return ov and ov[field] or default end
   end
-  label(p, "X", PAD, -204)
-  E.xBox = box(p, 70, 22, PAD + 62, -206, applyPos)
-  label(p, "Y", PAD + 168, -204)
-  E.yBox = box(p, 70, 22, PAD + 232, -206, applyPos)
+  -- Where an overlay SITS (size, position, strata, level) is what the engine can
+  -- re-apply without rebuilding every overlay frame — which matters when a drag
+  -- fires this on every frame.
+  local function setLayout(field)
+    return function(v)
+      local ov = CurrentOverlay()
+      if not ov then return end
+      ov[field] = v
+      GloomsOverlays_ApplyLayout(ov)
+    end
+  end
+  E.setLayout = setLayout
+
+  E.wRow = numRow(sizeCol,  -2, "Width",  1, 2000, ovNum("width", 200),  setLayout("width"))
+  E.hRow = numRow(sizeCol, -48, "Height", 1, 2000, ovNum("height", 200), setLayout("height"))
+  E.xRow = numRow(posCol,   -2, "X", -1000, 1000, ovNum("x", 0), setLayout("x"))
+  E.yRow = numRow(posCol,  -48, "Y", -1000, 1000, ovNum("y", 0), setLayout("y"))
 
   -- Nudge: an increment plus four caret arrows that move the live overlay.
-  label(p, "Nudge", PAD, -238)
-  E.nudgeBox = flatEditBox(p, 46, 22)
-  E.nudgeBox:SetPoint("TOPLEFT", PAD + 62, -240)
+  -- Kept (the owner explicitly wants them) and parked under the POSITION
+  -- sliders, which are the only thing they act on.
+  label(posCol, "Nudge", 18, -96)
+  E.nudgeBox = flatEditBox(posCol, 40, 22)
+  E.nudgeBox:SetPoint("TOPLEFT", 66, -98)
   E.nudgeBox:SetText("1"); E.nudgeBox:SetMaxLetters(5)
   E.nudgeBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
   E.nudgeBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-  label(p, "px", PAD + 114, -238, 10.5, MUTE)
+  label(posCol, "px", 112, -96, 10.5, MUTE)
 
   local function nudge(field, mult)
     local ov = CurrentOverlay()
     if not ov then return end
     local step = (tonumber(E.nudgeBox:GetText()) or 1) * mult
     ov[field] = (ov[field] or 0) + step
-    if field == "x" then E.xBox:SetText(tostring(ov.x)) else E.yBox:SetText(tostring(ov.y)) end
-    GloomsOverlays_ApplyAll()
+    GloomsOverlays_ApplyLayout(ov)
+    local row = (field == "x") and E.xRow or E.yRow
+    row:refresh()
   end
-  local nx = PAD + 150
-  caretButton(p, 28, 22, "up",    nx,       -240):SetScript("OnClick", function() nudge("y",  1) end)
-  caretButton(p, 28, 22, "down",  nx + 32,  -240):SetScript("OnClick", function() nudge("y", -1) end)
-  caretButton(p, 28, 22, "left",  nx + 64,  -240):SetScript("OnClick", function() nudge("x", -1) end)
-  caretButton(p, 28, 22, "right", nx + 96,  -240):SetScript("OnClick", function() nudge("x",  1) end)
+  caretButton(posCol, 26, 22, "up",    136, -98):SetScript("OnClick", function() nudge("y",  1) end)
+  caretButton(posCol, 26, 22, "down",  166, -98):SetScript("OnClick", function() nudge("y", -1) end)
+  caretButton(posCol, 26, 22, "left",  196, -98):SetScript("OnClick", function() nudge("x", -1) end)
+  caretButton(posCol, 26, 22, "right", 226, -98):SetScript("OnClick", function() nudge("x",  1) end)
 
   -- ── Transform ─────────────────────────────────────────────
-  sectionHead(p, "Transform", -282)
-  E.rotRow = sliderRow(p, -310, "Rotation", -360, 360, 1,
+  sectionHead(p, "Transform", -306)
+  E.rotRow = sliderRow(p, -334, "Rotation", -360, 360, 1,
     function() local ov = CurrentOverlay(); return ov and ov.rotation or 0 end,
     function(v) LiveApply("rotation", math.floor(v + 0.5)) end,
     function(v) return string.format("%d°", math.floor(v + 0.5)) end)
 
   -- Degree ticks under the slider (the old editor's -360/-180/0/180/360 scale).
   local ticks = CreateFrame("Frame", nil, p)
-  ticks:SetPoint("TOPLEFT", PAD, -344); ticks:SetPoint("TOPRIGHT", -PAD, -344)
+  ticks:SetPoint("TOPLEFT", PAD, -368); ticks:SetPoint("TOPRIGHT", -PAD, -368)
   ticks:SetHeight(12)
   local TICK_LABELS = { "-360°", "-180°", "0°", "180°", "360°" }
   local TICK_FRACS = { 0, 0.25, 0.5, 0.75, 1 }
@@ -560,46 +641,59 @@ local function BuildEditor(p)
   end)
 
   E.rotReset = flatButton(p, 100, 20, COLOR.heroic, "Reset rotation", 11)
-  E.rotReset:SetBase(0.2); E.rotReset:SetPoint("TOPLEFT", PAD, -364)
+  E.rotReset:SetBase(0.2); E.rotReset:SetPoint("TOPLEFT", PAD, -388)
   E.rotReset:SetScript("OnClick", function()
     LiveApply("rotation", 0)
     E.rotRow:refresh()
   end)
 
-  E.flipH = toggleRow(p, "Flip horizontal", PAD + 130, -364,
+  E.flipH = toggleRow(p, "Flip horizontal", PAD + 130, -388,
     function() local ov = CurrentOverlay(); return ov and ov.flipH or false end,
     function(v) LiveApply("flipH", v and true or false) end)
-  E.flipV = toggleRow(p, "Flip vertical", PAD + 320, -364,
+  E.flipV = toggleRow(p, "Flip vertical", PAD + 320, -388,
     function() local ov = CurrentOverlay(); return ov and ov.flipV or false end,
     function(v) LiveApply("flipV", v and true or false) end)
 
-  label(p, "Spin speed", PAD, -400)
-  label(p, "°/sec — 0 turns spinning off", PAD, -418, 10.5, MUTE)
-  E.spinBox = box(p, 60, 22, PAD + 200, -402, function(self)
-    LiveApply("spinSpeed", tonumber(self:GetText()) or 0)
-  end)
-  E.spinBox:SetMaxLetters(6)
-  E.spinDir = choiceRow(p, { { "cw", "CW" }, { "ccw", "CCW" } }, 56, 22, PAD + 276, -402, 6,
+  -- Spin speed — a slider like the rest, with CW/CCW BESIDE it rather than
+  -- underneath (the owner 2026-07-25). Same slot-frame trick as the columns
+  -- above: the slider fills its parent, so the parent stops where the buttons
+  -- begin, and the buttons hang off the slot's right edge so the pair still
+  -- lines up if the shell ever widens the pane.
+  local SPIN_Y, DIR_W = -430, 56 * 2 + 6
+  local spinSlot = CreateFrame("Frame", nil, p)
+  spinSlot:SetPoint("TOPLEFT", PAD - 18, SPIN_Y)
+  spinSlot:SetPoint("TOPRIGHT", -(DIR_W + 14), SPIN_Y)
+  spinSlot:SetHeight(60)
+  E.spinRow = numRow(spinSlot, 0, "Spin speed", 0, 360,
+    function() local ov = CurrentOverlay(); return ov and ov.spinSpeed or 0 end,
+    function(v) LiveApply("spinSpeed", v) end,
+    "°/sec — 0 turns spinning off")
+
+  local dirSlot = CreateFrame("Frame", nil, p)
+  dirSlot:SetPoint("TOPLEFT", spinSlot, "TOPRIGHT", -4, 0)   -- -4: 14px gap less the slot's own 18px inset
+  dirSlot:SetSize(DIR_W, 60)
+  -- -27 centres the buttons on the slider, which the sub-label pushes to -30.
+  E.spinDir = choiceRow(dirSlot, { { "cw", "CW" }, { "ccw", "CCW" } }, 56, 22, 0, -27, 6,
     function(v) LiveApply("spinDir", v) end)
 
   -- ── Appearance ────────────────────────────────────────────
-  sectionHead(p, "Appearance", -452)
-  E.alphaRow = sliderRow(p, -480, "Alpha", 0, 100, 1,
+  sectionHead(p, "Appearance", -504)
+  E.alphaRow = sliderRow(p, -532, "Alpha", 0, 100, 1,
     function() local ov = CurrentOverlay(); return math.floor((ov and ov.alpha or 1) * 100 + 0.5) end,
     function(v) LiveApply("alpha", math.floor(v + 0.5) / 100) end,
     function(v) return string.format("%d%%", math.floor(v + 0.5)) end)
 
-  label(p, "Tint", PAD, -524)
+  label(p, "Tint", PAD, -576)
   E.tint = colorSwatch(p,
     function()
       local ov = CurrentOverlay()
       return { ov and ov.tintR or 1, ov and ov.tintG or 1, ov and ov.tintB or 1 }
     end,
     function(c) LiveApplyMulti({ tintR = c[1], tintG = c[2], tintB = c[3] }) end)
-  E.tint.swatch:SetPoint("TOPLEFT", PAD + 62, -524)
+  E.tint.swatch:SetPoint("TOPLEFT", PAD + 62, -576)
 
   E.tintReset = flatButton(p, 60, 20, COLOR.heroic, "Reset", 11)
-  E.tintReset:SetBase(0.2); E.tintReset:SetPoint("TOPLEFT", PAD + 100, -524)
+  E.tintReset:SetBase(0.2); E.tintReset:SetPoint("TOPLEFT", PAD + 100, -576)
   E.tintReset:SetScript("OnClick", function()
     LiveApplyMulti({ tintR = 1, tintG = 1, tintB = 1 })
     E.tint:refresh()
@@ -625,10 +719,10 @@ local function BuildEditor(p)
     E.syncTint()
   end
 
-  E.classPlayer = toggleRow(p, "Player class color", PAD, -556,
+  E.classPlayer = toggleRow(p, "Player class color", PAD, -608,
     function() local ov = CurrentOverlay(); return ov and ov.useClassColor == true end,
     function(v) if v then SetClassColor("target", false) end; SetClassColor("player", v) end)
-  E.classTarget = toggleRow(p, "Target class color", PAD + 280, -556,
+  E.classTarget = toggleRow(p, "Target class color", PAD + 280, -608,
     function() local ov = CurrentOverlay(); return ov and ov.useTargetColor == true end,
     function(v) if v then SetClassColor("player", false) end; SetClassColor("target", v) end)
 
@@ -643,35 +737,66 @@ local function BuildEditor(p)
     E.classTarget:refresh()
   end
 
-  label(p, "Blend mode", PAD, -592)
-  E.blend = choiceRow(p, { { "BLEND" }, { "ADD" }, { "MOD" } }, 62, 20, PAD + 200, -592, 6,
+  label(p, "Blend mode", PAD, -644)
+  E.blend = choiceRow(p, { { "BLEND" }, { "ADD" }, { "MOD" } }, 62, 20, PAD + 200, -644, 6,
     function(v) LiveApply("blendMode", v) end)
 
   -- ── Layer ─────────────────────────────────────────────────
-  sectionHead(p, "Layer (z-order)", -628)
-  label(p, "BACKGROUND sits below the UI · HIGH above most of it · TOOLTIP above everything.",
-    PAD, -656, 10.5, MUTE)
-  local STRATA = { "BACKGROUND", "LOW", "MEDIUM", "HIGH", "DIALOG", "FULLSCREEN", "TOOLTIP" }
+  sectionHead(p, "Layer (z-order)", -680)
+  label(p, "WORLD sits under everything · HIGH above most of the UI · TOOLTIP above all of it.",
+    PAD, -708, 10.5, MUTE)
+
+  -- All NINE of WoW's stratas. The list is Blizzard's and cannot be extended;
+  -- WORLD and FULLSCREEN_DIALOG were missing here, and FULLSCREEN_DIALOG in
+  -- particular is one of the most used in the wild (the client's other addons
+  -- reference it 5× more often than FULLSCREEN).
+  local STRATA = {
+    { "WORLD" }, { "BACKGROUND" }, { "LOW" }, { "MEDIUM" }, { "HIGH" },
+    { "DIALOG" }, { "FULLSCREEN" }, { "FULLSCREEN_DIALOG", "FS DIALOG" }, { "TOOLTIP" },
+  }
+  local PER_ROW, SB_W = 5, 88
   local strataBtns = {}
-  local sx = PAD
   for i, s in ipairs(STRATA) do
-    local b = flatButton(p, 74, 20, COLOR.heroic, s == "FULLSCREEN" and "FSCREEN" or s, 11)
+    local value, text = s[1], s[2] or s[1]
+    local col, rowN = (i - 1) % PER_ROW, math.floor((i - 1) / PER_ROW)
+    local b = flatButton(p, SB_W, 20, COLOR.heroic, text, 11)
     b:SetBase(0.2)
-    b:SetPoint("TOPLEFT", sx, i <= 4 and -678 or -702)
+    b:SetPoint("TOPLEFT", PAD + col * (SB_W + 4), -730 - rowN * 24)
     b:SetScript("OnClick", function()
-      LiveApply("strata", s)
-      for _, e in ipairs(strataBtns) do e.b:SetActive(e.v == s) end
+      E.setLayout("strata")(value)
+      for _, e in ipairs(strataBtns) do e.b:SetActive(e.v == value) end
     end)
-    strataBtns[#strataBtns + 1] = { b = b, v = s }
-    sx = (i == 4) and PAD or (sx + 78)
+    strataBtns[#strataBtns + 1] = { b = b, v = value }
   end
+  attachTip(strataBtns[8].b, "FULLSCREEN_DIALOG",
+    "Blizzard's strata between FULLSCREEN and TOOLTIP. Abbreviated here to fit the button.")
   E.strata = { sync = function(value)
     for _, e in ipairs(strataBtns) do e.b:SetActive(e.v == value) end
   end }
 
+  -- Level — the numeric z-index INSIDE a strata (the owner 2026-07-25: seven
+  -- stratas is limiting once overlays have to interleave with Blizzard's UI).
+  -- Every overlay used to draw at the same level, so strata was the only
+  -- separation there was; this is the fine control under that coarse one.
+  -- 0–1000 covers everything in practice: Blizzard's own frames sit in the tens.
+  E.levelRow = numRow(p, -798, "Level", 0, 1000,
+    function()
+      local ov = CurrentOverlay()
+      return (ov and ov.level) or GloomsOverlays_GetDefaultLevel()
+    end,
+    E.setLayout("level"),
+    -- Kept short on purpose: a sliderRow sub-label is a single unwrapped line,
+    -- so anything much past ~80 characters runs off the pane and gets clipped.
+    "Higher draws in front, within the same strata · default "
+      .. GloomsOverlays_GetDefaultLevel())
+  label(p, "Strata always wins: a MEDIUM overlay at level 999 still sits under any HIGH frame.",
+    PAD, -850, 10.5, MUTE)
+  label(p, "Point at a Blizzard frame with /fstack to read the strata and level it uses.",
+    PAD, -864, 10.5, MUTE)
+
   -- ── Visibility ────────────────────────────────────────────
-  sectionHead(p, "Visibility", -738)
-  label(p, "The overlay shows while ANY switched-on condition is true.", PAD, -766, 10.5, MUTE)
+  sectionHead(p, "Visibility", -892)
+  label(p, "The overlay shows while ANY switched-on condition is true.", PAD, -920, 10.5, MUTE)
 
   local COND = {
     { "always",   "Always visible" },
@@ -690,7 +815,7 @@ local function BuildEditor(p)
   for i, c in ipairs(COND) do
     local key = c[1]
     local col, rowN = (i - 1) % 2, math.floor((i - 1) / 2)
-    E.cond[i] = toggleRow(p, c[2], PAD + col * 280, -790 - rowN * 30,
+    E.cond[i] = toggleRow(p, c[2], PAD + col * 280, -944 - rowN * 30,
       function() return conditionSet()[key] == true end,
       function(v)
         local set = conditionSet()
@@ -726,11 +851,14 @@ SelectOverlay = function(index)
 
   E.nameBox:SetText(ov.name or "")
   E.texBox:SetText(ov.texture or "")
-  E.wBox:SetText(tostring(ov.width or 200))
-  E.hBox:SetText(tostring(ov.height or 200))
-  E.xBox:SetText(tostring(ov.x or 0))
-  E.yBox:SetText(tostring(ov.y or 0))
-  E.spinBox:SetText(tostring(ov.spinSpeed or 0))
+
+  -- Each numRow drives its own slider AND its typed box from the overlay.
+  E.wRow:refresh()
+  E.hRow:refresh()
+  E.xRow:refresh()
+  E.yRow:refresh()
+  E.spinRow:refresh()
+  E.levelRow:refresh()
 
   E.rotRow:refresh()
   E.alphaRow:refresh()
@@ -804,10 +932,10 @@ local function BuildTab(c)
     if not ov then return end
     ov.name    = E.nameBox:GetText():match("^%s*(.-)%s*$")
     ov.texture = E.texBox:GetText():match("^%s*(.-)%s*$")
-    ov.width   = tonumber(E.wBox:GetText()) or 200
-    ov.height  = tonumber(E.hBox:GetText()) or 200
-    ov.x       = tonumber(E.xBox:GetText()) or 0
-    ov.y       = tonumber(E.yBox:GetText()) or 0
+    ov.width   = tonumber(E.wRow.box:GetText()) or 200
+    ov.height  = tonumber(E.hRow.box:GetText()) or 200
+    ov.x       = tonumber(E.xRow.box:GetText()) or 0
+    ov.y       = tonumber(E.yRow.box:GetText()) or 0
     GloomsOverlays_ApplyAll()
     RefreshList()
     SetStatus("|cff20ba56Saved.|r")

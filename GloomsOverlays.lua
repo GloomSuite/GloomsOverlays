@@ -7,6 +7,13 @@
 local addonName, addon = ...
 
 local liveOverlays = {}
+-- Live overlay frames, REUSED. WoW never reclaims a frame once created, so
+-- building a fresh set on every ApplyAll (which a slider drag fires ~60 times a
+-- second) parked thousands of dead frames in memory for the rest of the
+-- session. The pool holds one entry per index: the Nth enabled overlay always
+-- draws through framePool[N], and any surplus is parked, not discarded.
+local framePool    = {}
+local defaultLevel            -- WoW's natural frame level for a UIParent child
 local inCombat     = false
 local hasTarget    = false
 local isCasting    = false
@@ -108,17 +115,55 @@ end
 -- Build a single live overlay frame
 -- ============================================================
 
-local function BuildOverlayFrame(ov)
-    local safeName = (ov.name or "unnamed"):gsub("[^%w_]", "_")
-    local fname    = "GloomsOverlays_Live_" .. safeName .. "_" .. math.floor(GetTime() * 1000)
-    local f = CreateFrame("Frame", fname, UIParent)
-    f:SetSize(ov.width or 200, ov.height or 200)
-    f:SetPoint("CENTER", UIParent, "CENTER", ov.x or 0, ov.y or 0)
-    f:SetFrameStrata(ov.strata or "HIGH")
-    f:EnableMouse(false)
+-- The frame level an overlay draws at when it has never set one. Captured from
+-- the first pool frame; the fallback is WoW's documented parent+1 rule, for the
+-- case where the editor asks before any overlay has been built.
+function GloomsOverlays_GetDefaultLevel()
+    return defaultLevel or ((UIParent:GetFrameLevel() or 0) + 1)
+end
 
+-- Hand out framePool[index], creating it the first time. The name is the INDEX,
+-- not the overlay's name: it never changes, so _G gains one entry per slot
+-- instead of one per rebuild. Nothing reads these names — they exist for the
+-- frame stack in debuggers.
+local function AcquireFrame(index)
+    local slot = framePool[index]
+    if slot then return slot.frame, slot.tex end
+
+    local f = CreateFrame("Frame", "GloomsOverlays_Live_" .. index, UIParent)
+    f:EnableMouse(false)
+    -- Whatever level WoW hands a fresh UIParent child is the level EVERY overlay
+    -- used to draw at, so it is the right default for one that has never set
+    -- `level`. Read it rather than assuming the parent+1 rule, and capture it
+    -- once — a recycled frame's level is whatever its last occupant chose.
+    defaultLevel = defaultLevel or f:GetFrameLevel()
     local tex = f:CreateTexture(nil, "ARTWORK")
     tex:SetAllPoints(f)
+    framePool[index] = { frame = f, tex = tex }
+    return f, tex
+end
+
+local function BuildOverlayFrame(ov, index)
+    local f, tex = AcquireFrame(index)
+
+    -- ★ RESET whatever the PREVIOUS occupant of this slot left behind. Every
+    -- property set CONDITIONALLY below has to be cleared here, or it leaks from
+    -- one overlay onto the next: the animation script (spritesheets AND spin),
+    -- the texture itself, its crop (spritesheet frame / atlas / flip) and its
+    -- rotation. The unconditional ones — size, point, strata, blend, alpha,
+    -- vertex color — need no reset because they are always reassigned.
+    f:SetScript("OnUpdate", nil)
+    tex:SetTexture(nil)
+    tex:SetTexCoord(0, 1, 0, 1)
+    tex:SetRotation(0)
+
+    f:SetSize(math.max(1, ov.width or 200), math.max(1, ov.height or 200))
+    f:ClearAllPoints()
+    f:SetPoint("CENTER", UIParent, "CENTER", ov.x or 0, ov.y or 0)
+    f:SetFrameStrata(ov.strata or "HIGH")
+    -- Level orders overlays WITHIN a strata (strata always wins). Set after the
+    -- strata, and always — a recycled frame carries its last occupant's level.
+    f:SetFrameLevel(ov.level or GloomsOverlays_GetDefaultLevel())
 
     local t  = ov.texture or ""
     local sh = ov.sheet
@@ -204,7 +249,11 @@ local function BuildOverlayFrame(ov)
         if startRad ~= 0 then tex:SetRotation(startRad) end
     end
 
-    if not ShouldShow(ov) then f:Hide() end
+    -- SetShown, not Hide: a recycled slot may have come back hidden, and a
+    -- hidden frame never runs its OnUpdate, so a spinning overlay would sit
+    -- frozen. (WoW skipping OnUpdate on hidden frames is also why a parked
+    -- frame costs nothing per frame.)
+    f:SetShown(ShouldShow(ov))
 
     return f, tex
 end
@@ -213,25 +262,64 @@ end
 -- GloomsOverlays_ApplyAll
 -- ============================================================
 
-function GloomsOverlays_ApplyAll()
-    for _, entry in pairs(liveOverlays) do
-        if entry.frame then
-            entry.frame:Hide()
-            entry.frame:SetParent(nil)
-        end
+-- Park every slot from `index` up: the overlays that used to own them are gone
+-- (switched off, deleted, or a smaller profile is now active). Parked frames
+-- keep their place in the pool for the next ApplyAll.
+local function ParkFramesFrom(index)
+    for i = index, #framePool do
+        local slot = framePool[i]
+        slot.frame:Hide()
+        slot.frame:SetScript("OnUpdate", nil)   -- stop animating something nothing points at
+        slot.tex:SetTexture(nil)                -- and let go of the texture's memory
     end
-    liveOverlays = {}
+end
 
-    if not VibeOverlayDB then return end
-    local profile = GloomsOverlays_GetProfile()
-    if not profile then return end
+function GloomsOverlays_ApplyAll()
+    wipe(liveOverlays)
 
+    local profile = VibeOverlayDB and GloomsOverlays_GetProfile()
+    if not profile then return ParkFramesFrom(1) end
+
+    -- `n` walks the POOL, not the overlay list: switched-off overlays take no
+    -- slot, so the enabled ones always occupy 1..n with no gaps.
+    local n = 0
     for _, ov in ipairs(profile.overlays) do
         if ov.enabled ~= false then
-            local f, tex = BuildOverlayFrame(ov)
+            n = n + 1
+            local f, tex = BuildOverlayFrame(ov, n)
             liveOverlays[ov.name] = { frame=f, tex=tex, config=ov }
         end
     end
+    ParkFramesFrom(n + 1)
+end
+
+-- ============================================================
+-- GloomsOverlays_ApplyLayout — the live path for the editor's WHERE controls
+--
+-- ApplyAll reconfigures EVERY overlay in the profile — re-resolving each
+-- texture name through the Hub, re-cropping it and re-wiring its animation —
+-- which is a lot of work to repeat ~60 times a second for the whole profile
+-- while ONE overlay's size slider is being dragged. Size, position, strata and
+-- level are the fields that can be re-applied in place instead, which is what
+-- this does. Anything that changes the ART or the animation (texture, flip,
+-- rotation, spin) still needs the full ApplyAll.
+-- (Frame CHURN used to be the bigger cost here; the pool above fixed that.)
+--
+-- No live frame (the overlay is switched off, or two overlays share a name so
+-- only one owns the key) means there is nothing on screen to move: the caller
+-- has already written the value, and the next ApplyAll picks it up.
+-- ============================================================
+
+function GloomsOverlays_ApplyLayout(ov)
+    if not ov then return end
+    local entry = liveOverlays[ov.name]
+    local f = entry and entry.frame
+    if not f then return end
+    f:SetSize(math.max(1, ov.width or 200), math.max(1, ov.height or 200))
+    f:ClearAllPoints()
+    f:SetPoint("CENTER", UIParent, "CENTER", ov.x or 0, ov.y or 0)
+    f:SetFrameStrata(ov.strata or "HIGH")
+    f:SetFrameLevel(ov.level or GloomsOverlays_GetDefaultLevel())
 end
 
 -- ============================================================
