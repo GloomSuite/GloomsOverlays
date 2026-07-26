@@ -4,31 +4,36 @@
 > under a shared base addon, **GloomsHub** (`~/GloomsHub`). All cross-cutting suite facts —
 > the plan, current phase status, and shared runtime contracts (design tokens, the tabbed-
 > shell API, the media resolver) — live THERE and are the single source of truth; this repo
-> does not keep its own copy. **Before any *suite* work read `~/GloomsHub/docs/HANDOFF.md`
-> first, then SUITE-STATE.md / SUITE-PLAN.md / CONTRACTS.md.** Normal Overlays-only work
+> does not keep its own copy. **Before any *suite* work read `~/GloomsHub/docs/BACKLOG.md`
+> first, then SUITE-STATE.md (settled state), FINDINGS.md (unproven diagnosis) and
+> CONTRACTS.md as needed.** Normal Overlays-only work
 > (the overlay engine, conditions, spritesheets, bugs) proceeds here as usual.
 > **Gloom's Build Barn is NOT in the suite.**
 
-> ## ★★ ROUTE THE REQUEST BEFORE YOU DO THE WORK (the owner, 2026-07-25)
-> **All four suite repos are in the session's working directories, so a request aimed at another
-> repo can be silently fulfilled from here. Don't let that happen.** Before starting any change,
-> decide which repo OWNS it. **If it isn't this one, STOP and say so BEFORE editing anything** —
-> name the repo, say in one line what it would touch, and let the owner switch. Do not "just do it
-> from here", do not make a partial edit first, do not quietly edit across repos.
+> ## ★★ ONE PROJECT, FOUR REPOS — the owner works from `~/GloomsHub`
+> **He opens GloomsHub and nothing else, ever.** All four suite repos are in every session's
+> working directories, so this repo gets edited from a Hub session routinely — **that is correct,
+> not a violation. Never tell him to close a project and open another one.**
 >
-> **Belongs HERE (`~/GloomsOverlays`):** the overlay engine, conditions, spritesheets, the asset
-> browser drawer, the contents of the Overlays tab.
-> **Belongs in `~/GloomsHub`:** the Suite window/shell + tab API · the shared `LibGloomSkin` toolkit
+> **The rule (rewritten 2026-07-26, replacing "stop and switch"):** before any change, decide which
+> repo OWNS it and **say so in one line, up front**. Then get his go-ahead and do it from wherever
+> you are. The goal is that no cross-repo edit happens *silently* — not that he moves.
+>
+> **Belongs HERE (`~/GloomsOverlays`):** the overlay engine, conditions, spritesheets, the asset browser drawer, the contents of the Overlays tab.
+> **Belongs in `~/GloomsHub`:** the Suite window + tab API · the shared `LibGloomSkin` toolkit
 > (tokens, widgets, `UI.*`) · media registration/catalog/resolver + the Media tab · the one minimap
-> launcher · the suite docs + phase ledger.
+> launcher · the suite docs and backlog.
 > **Belongs in `~/GloomsBars` / `~/GloomsAuras`:** anything about those tools.
-> **Test:** changes how ONE tool looks/behaves → that tool's repo. Changes something all three share,
-> or the window they live in → the Hub.
+> **Test:** changes how ONE tool looks/behaves → that tool's repo. Changes something all three
+> share, or the window they live in → the Hub.
 >
-> **Carve-outs (correct, not violations):** updating the Hub's SUITE-STATE ledger from here is
-> *required* after suite work — just say you're doing it; a shared-contract change must update its
-> consumers in the same session (say which repos up front); and read-only cross-repo grepping is
-> always fine — the rule is about WRITING. **Ambiguous?** Say so, recommend, don't guess silently.
+> **★ Working on this repo from a Hub session? Read THIS file first** — and `docs/HANDOFF.md` for
+> anything substantial. These hold the frozen decisions that do NOT load automatically from
+> elsewhere, and they are the walls that stop a settled question being reopened.
+>
+> **No permission needed for:** updating the Hub's suite docs (required after suite work — just say
+> you're doing it) · a shared-contract change plus its consumers in one pass · read-only cross-repo
+> grepping. **Ambiguous?** Say so and recommend; don't guess silently, don't stall.
 > Full rule + ownership table: `~/GloomsHub/CLAUDE.md`.
 
 Bespoke WoW addon: renders cosmetic texture overlays on screen, shown/hidden by simple
