@@ -63,6 +63,24 @@ Renaming them looks like harmless cleanup and is silent data loss:
 The original `VibeOverlay.lua` save files are still on disk untouched as the rollback. If the
 globals ever *do* get renamed, it needs a real migration shim, not a find-and-replace.
 
+## ⚠ `SKIN_NEEDS` STAYS AT 4 — a decision, not an oversight (2026-07-26)
+
+`GloomsOverlays_Editor.lua` calls **`UI.RegisterColorProvider`**, which is `LibGloomSkin` MINOR
+**6**. The gate still declares **4**, and the call is wrapped in `if UI.RegisterColorProvider then`.
+
+That looks like exactly the mistake the version-gate rule exists to catch, so here is why it isn't:
+the gate declares what a file genuinely **needs**. Against an older Hub this file loses one thing —
+the colour picker won't list overlay tints under "where is this colour used", which is cosmetic.
+Declaring 6 would instead **disable the entire Overlays editor** over that. The guard is what makes
+the lower number honest.
+
+**If you ever drop the `if` guard, `SKIN_NEEDS` must become 6 in the same commit.**
+
+`OverlayColorSources` (just above `LiveApply`) is that provider: it walks `profile.overlays` and
+reports each tint by overlay NAME, because the Tint swatch itself reads only the SELECTED overlay.
+Untinted overlays store white and are deliberately skipped, or they would bury the picker's palette
+in a colour nobody chose. **Contract: `~/GloomsHub/docs/CONTRACTS.md` §4.**
+
 ## Conventions
 - Namespace: globals are `GloomsOverlays_*` (engine API) — `VibeOverlay*` survives ONLY in the
   two SavedVariables names above.

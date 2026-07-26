@@ -30,6 +30,11 @@
 -- actionable sentence instead.
 -- ★ BUMP SKIN_NEEDS IN THE SAME COMMIT that first calls a newer widget.
 -- --------------------------------------------------------------------------
+-- Stays 4 on purpose. This file's one MINOR-6 call, UI.RegisterColorProvider,
+-- is guarded by `if UI.RegisterColorProvider then` — against an older Hub the
+-- picker just doesn't list overlay tints, which is cosmetic. Declaring 6 would
+-- disable the whole EDITOR over that, and the gate exists to state what a file
+-- genuinely NEEDS. Drop the guard and this must become 6 in the same commit.
 local SKIN_MAJOR, SKIN_NEEDS = "LibGloomSkin-1.0", 4
 
 local Skin, skinMinor = LibStub(SKIN_MAJOR, true)
@@ -138,6 +143,25 @@ local function CurrentOverlay()
   local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
   return profile and profile.overlays and profile.overlays[currentEditIndex]
 end
+
+-- Every overlay's tint, by name — what the Hub's color picker lists as "where is
+-- this in use". A walk rather than a per-control getter: the Tint swatch above
+-- re-points at the selected overlay, so it could only ever report that one.
+-- An UNTINTED overlay is stored as white, and reporting every one of those would
+-- bury the row in a color nobody chose — so plain white is skipped.
+local function OverlayColorSources()
+  local out = {}
+  local profile = GloomsOverlays_GetProfile and GloomsOverlays_GetProfile()
+  for i, ov in ipairs(profile and profile.overlays or {}) do
+    local r, g, b = ov.tintR or 1, ov.tintG or 1, ov.tintB or 1
+    if not (r > 0.99 and g > 0.99 and b > 0.99) then
+      out[#out + 1] = { color = { r, g, b },
+        label = ("Overlays › Tint (%s)"):format(ov.name or ("Overlay " .. i)) }
+    end
+  end
+  return out
+end
+if UI.RegisterColorProvider then UI.RegisterColorProvider("GloomsOverlays", OverlayColorSources) end
 
 local function LiveApply(field, value)
   local ov = CurrentOverlay()
@@ -689,6 +713,8 @@ local function BuildEditor(p)
       local ov = CurrentOverlay()
       return { ov and ov.tintR or 1, ov and ov.tintG or 1, ov and ov.tintB or 1 }
     end,
+    -- No label: this swatch reads the SELECTED overlay, so it could only ever
+    -- report one. OverlayColorSources below walks every overlay by name.
     function(c) LiveApplyMulti({ tintR = c[1], tintG = c[2], tintB = c[3] }) end)
   E.tint.swatch:SetPoint("TOPLEFT", PAD + 62, -576)
 
