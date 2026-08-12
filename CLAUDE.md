@@ -40,7 +40,7 @@ Bespoke WoW addon: renders cosmetic texture overlays on screen, shown/hidden by 
 conditions (always / in combat / out of combat / target selected / while casting), with
 rotation, spin, tint, flip, blend mode, layer (all 9 stratas + a numeric level within one),
 alpha, and spritesheet animation. Target:
-**Midnight 12.0.7** (Interface `120007`), retail only.
+**Midnight 12.1** (Interface `120100`), retail only.
 
 Formerly **VibeOverlay** — renamed in suite Phase E (2026-07-24). The `Vibe` name is retired
 and must not come back in anything user-visible. `/vibe` is gone; the slash is **`/go`**.
