@@ -3,11 +3,13 @@
 -- The asset browser: preview a texture, play it as a spritesheet, keep
 -- favorites, and drop the result into the editor.
 --
--- Phase E gate B: the old 780x560 floating window is GONE. This is now a
--- DRAWER docked flush against the Suite window's edge (flipping to the other
--- side if it would run off-screen), parented to the Overlays tab container so
--- it hides with the tab AND the window. Opened from the editor's Texture field
--- ("Browse…") or with /go preview.
+-- A DRAWER beside the Overlays settings window (2026-09-27, the two-window
+-- design): hung from the Suite's root, 20 to the right of the settings window
+-- (or left of the selector if that would run off the screen), so it scales and
+-- closes with the windows — GloomsOverlays_DockDrawer in _Pages.lua. It still
+-- wears the first design's kit until the owner mocks the pickers (Hub BACKLOG
+-- 16). Opened from the Texture field's Browse, the selector's Browse Assets,
+-- or /go preview.
 -- Favorites still live in VibeOverlayDB.favorites — the SavedVariables globals
 -- are deliberately unchanged (see the TOC's warning).
 -- ============================================================
@@ -26,7 +28,7 @@ local SKIN_MAJOR, SKIN_NEEDS = "LibGloomSkin-1.0", 3
 
 local Skin, skinMinor = LibStub(SKIN_MAJOR, true)
 if not Skin or (skinMinor or 0) < SKIN_NEEDS then
-  return   -- chunk-level return: the asset browser is skipped; _Editor.lua prints the one warning
+  return   -- chunk-level return: the asset browser is skipped; _Pages.lua prints the one warning
 end
 local UI = Skin.UI
 local COLOR, FONT = Skin.COLOR, Skin.FONT
@@ -480,7 +482,7 @@ end
 -- ------------------------------------------------------------
 
 function GloomsOverlays_OpenAssetBrowser(prefill)
-  GloomsHub:Open("overlays")        -- the drawer parents to the tab container
+  GloomsHub:Open("overlays")        -- the drawer docks beside the settings window
   if not drawer then
     local ok, err = pcall(BuildDrawer)
     if not ok then

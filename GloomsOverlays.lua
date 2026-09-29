@@ -99,7 +99,34 @@ end
 -- Condition evaluation
 -- ============================================================
 
+-- PREVIEW (2026-09-27, the owner: a lit eye should show the overlay NOW, out
+-- of combat too, while the windows are open — Auras' eye). While the Overlays
+-- windows are open, an overlay whose eye is lit shows whatever its conditions
+-- say — even one switched off. Closing the windows ends it; conditions rule
+-- again. The eye (the owner, 2026-09-27, as Auras'): `ov.preview` is saved and
+-- is the overlay's state while NOT selected; the SELECTED one shows at once
+-- whatever that says (`pickShow`, fresh on every new selection), and its eye
+-- toggles only that — deselected, it goes back to its saved eye.
+local previewing, pick, pickShow = false, nil, true
+function GloomsOverlays_EyeOn(ov)
+    if not ov then return false end
+    if ov == pick then return pickShow end
+    return ov.preview == true
+end
+local function Previewed(ov) return previewing and GloomsOverlays_EyeOn(ov) end
+function GloomsOverlays_SetPreview(on) previewing = on and true or false; GloomsOverlays_ApplyAll() end
+function GloomsOverlays_SetPick(ov)
+    if ov ~= pick then pick, pickShow = ov, true end
+    GloomsOverlays_ApplyAll()
+end
+function GloomsOverlays_ToggleEye(ov)
+    if not ov then return end
+    if ov == pick then pickShow = not pickShow else ov.preview = (not ov.preview) or nil end
+    GloomsOverlays_ApplyAll()
+end
+
 local function ShouldShow(ov)
+    if Previewed(ov) then return true end
     local c = ov.condition or "always"
     for word in c:gmatch("[^,]+") do
         if word == "always"   then return true end
@@ -284,7 +311,7 @@ function GloomsOverlays_ApplyAll()
     -- slot, so the enabled ones always occupy 1..n with no gaps.
     local n = 0
     for _, ov in ipairs(profile.overlays) do
-        if ov.enabled ~= false then
+        if ov.enabled ~= false or Previewed(ov) then
             n = n + 1
             local f, tex = BuildOverlayFrame(ov, n)
             liveOverlays[ov.name] = { frame=f, tex=tex, config=ov }
@@ -457,6 +484,22 @@ SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
         end
         if next(liveOverlays) == nil then
             print("  (no live frames)")
+        end
+        -- each overlay's frame scale, and Unit Frames' health display beside
+        -- them: the size check for "the same number, the same size" (2026-09-27)
+        for name, entry in pairs(liveOverlays) do
+            print(string.format("  [%s] saved %sx%s, effective scale %.3f", name, tostring(entry.config.width), tostring(entry.config.height), entry.frame:GetEffectiveScale()))
+        end
+        local GU = _G.GloomsUnitFrames
+        local uf = GU and GU.Frame and GU:Frame("player")
+        local r = uf and uf.rings and uf.rings.health
+        if r then
+            local w, h = r.holder:GetSize()
+            local rc = GU:Config("player") and GU:Config("player").rings.health
+            local bc = rc and rc.bar
+            print(string.format("  GU player health: mode=%s shape=%s holder=%.1fx%.1f effective scale %.3f shapeW/H=%s/%s size=%s",
+                tostring(rc and rc.mode), tostring(bc and bc.shape), w or -1, h or -1, r.holder:GetEffectiveScale(),
+                tostring(bc and bc.shapeW), tostring(bc and bc.shapeH), tostring(bc and bc.size)))
         end
 
     else

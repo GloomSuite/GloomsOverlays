@@ -19,5 +19,5 @@
 ## SavedVariablesPerCharacter: VibeOverlayDBChar
 
 GloomsOverlays.lua
-GloomsOverlays_Editor.lua
+GloomsOverlays_Pages.lua
 GloomsOverlays_Preview.lua

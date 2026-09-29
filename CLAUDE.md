@@ -63,23 +63,24 @@ Renaming them looks like harmless cleanup and is silent data loss:
 The original `VibeOverlay.lua` save files are still on disk untouched as the rollback. If the
 globals ever *do* get renamed, it needs a real migration shim, not a find-and-replace.
 
-## ⚠ `SKIN_NEEDS` STAYS AT 4 — a decision, not an oversight (2026-07-26)
+## The windows (2026-09-27, the two-window design) — `GloomsOverlays_Pages.lua`
 
-`GloomsOverlays_Editor.lua` calls **`UI.RegisterColorProvider`**, which is `LibGloomSkin` MINOR
-**6**. The gate still declares **4**, and the call is wrapped in `if UI.RegisterColorProvider then`.
+The settings are **`GloomsOverlays_Pages.lua`** (`SKIN_NEEDS = 17`), built without a mock from the
+Auras / Unit Frames pages: the selector lists the profile's overlays (eye · right-click Rename /
+Duplicate / Delete · New Overlay · Browse Assets), the tab names the overlay, and five sections —
+Overlay & Texture · Size & Position (Width/Height with a proportions bracket, `ov.lockAspect` /
+`ov.aspect`) · Rotation & Motion · Layer · Visibility. The profile block is in the Hub's Global Settings.
+`GloomsOverlays_Editor.lua` (the old tab) is **out of the TOC — delete it once the owner approves.**
+It carried the "SKIN_NEEDS stays at 4" decision; that reasoning died with it (the pages need 17).
+`UI.RegisterColorProvider` is still guarded with `if` in the pages.
 
-That looks like exactly the mistake the version-gate rule exists to catch, so here is why it isn't:
-the gate declares what a file genuinely **needs**. Against an older Hub this file loses one thing —
-the colour picker won't list overlay tints under "where is this colour used", which is cosmetic.
-Declaring 6 would instead **disable the entire Overlays editor** over that. The guard is what makes
-the lower number honest.
-
-**If you ever drop the `if` guard, `SKIN_NEEDS` must become 6 in the same commit.**
-
-`OverlayColorSources` (just above `LiveApply`) is that provider: it walks `profile.overlays` and
-reports each tint by overlay NAME, because the Tint swatch itself reads only the SELECTED overlay.
-Untinted overlays store white and are deliberately skipped, or they would bury the picker's palette
-in a colour nobody chose. **Contract: `~/GloomsHub/docs/CONTRACTS.md` §4.**
+**The eye** (the owner, 2026-09-27, as Auras'): `ov.preview` is the overlay's saved eye while NOT
+selected; the selected overlay shows while the windows are open whatever that says, and its eye
+toggles only that (`GloomsOverlays_SetPick`, `GloomsOverlays_ToggleEye`, `GloomsOverlays_EyeOn` in the
+engine; `GloomsOverlays_SetPreview(on)` from the windows' open/close). ON/OFF is the Visibility
+section's switch (`ov.enabled`). **The asset browser** (`_Preview.lua`, still the old kit) docks 20
+right of the settings window via `GloomsOverlays_DockDrawer`. `/go debug` prints each overlay's saved
+and real size and scale, and Unit Frames' health display beside them.
 
 ## Conventions
 - Namespace: globals are `GloomsOverlays_*` (engine API) — `VibeOverlay*` survives ONLY in the
@@ -88,7 +89,7 @@ in a colour nobody chose. **Contract: `~/GloomsHub/docs/CONTRACTS.md` §4.**
   `#936bff` on near-black navy, Khand titles + GeneralSans body, sliding switches, no native
   Blizzard chrome). Do not hand-maintain a local toolkit copy — that is the drift the suite
   exists to remove. Tokens + widget surface: `~/GloomsHub/docs/CONTRACTS.md` §4.
-- Config renders **only** inside the Hub's Suite window, as the `overlays` tab
+- Config renders **only** in the Hub's two-window Suite (the `overlays` tool, `windows = true`)
   (`GloomsHub:RegisterTab`). Hard dependency on GloomsHub, no standalone fallback window,
   no minimap button (the suite has ONE launcher — the Hub's GS button). Locked decisions.
 - Media names resolve through `GloomsHub:ResolveAssetPath` — never `StoneTweaks_*`.
