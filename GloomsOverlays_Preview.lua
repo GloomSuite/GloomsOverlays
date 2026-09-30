@@ -368,10 +368,11 @@ local function BuildDrawer()
     if not (GloomsOverlays_HasSelection and GloomsOverlays_HasSelection()) then
       status("|cffc41e3aSelect an overlay to edit first.|r"); return
     end
-    GloomsOverlays_SetTextureField(input)
+    GloomsOverlays_SetTextureField(input, GloomsOverlays_SheetFor(input, tonumber(colsBox:GetText()), tonumber(rowsBox:GetText()),
+      tonumber(framesBox:GetText()), tonumber(fpsBox:GetText())))
     f:Hide()
   end)
-  attachTip(useBtn, "Use this texture", "Drops this texture into the overlay you're editing and closes the browser.")
+  attachTip(useBtn, "Use this texture", "Drops this texture into the overlay you're editing — with the Columns, Rows, Frames and FPS above, so a spritesheet plays — and closes the browser.")
 
   local saveBtn = flatButton(f, 162, 24, COLOR.heroic, "+ Save as New Overlay", 11)
   saveBtn:SetBase(0.2); saveBtn:SetPoint("TOPLEFT", X + 170, -384)
@@ -383,22 +384,9 @@ local function BuildDrawer()
     if not GloomsOverlays_SaveFromPreview then
       status("|cffc41e3aEditor not loaded yet — try again after login.|r"); return
     end
-    local cols  = tonumber(colsBox:GetText()) or 1
-    local rowsN = tonumber(rowsBox:GetText()) or 1
-    local sheetData
-    if cols > 1 or rowsN > 1 then
-      sheetData = {
-        cols    = cols,
-        rows    = rowsN,
-        fps     = tonumber(fpsBox:GetText()) or 15,
-        frames  = tonumber(framesBox:GetText()) or (cols * rowsN),
-        uLeft   = spriteAnim.uLeft or 0,
-        uRight  = spriteAnim.uRight or 1,
-        vTop    = spriteAnim.vTop or 0,
-        vBottom = spriteAnim.vBottom or 1,
-        fileID  = spriteAnim.fileID,
-      }
-    end
+    -- the grid, cut from the texture's own file (GloomsOverlays_SheetFor, _Pages.lua)
+    local sheetData = GloomsOverlays_SheetFor(input, tonumber(colsBox:GetText()), tonumber(rowsBox:GetText()),
+      tonumber(framesBox:GetText()), tonumber(fpsBox:GetText()))
     local ok, err = pcall(GloomsOverlays_SaveFromPreview, input, sheetData)
     if ok then
       status("|cff20ba56Saved — it's selected in the list, ready to position.|r")

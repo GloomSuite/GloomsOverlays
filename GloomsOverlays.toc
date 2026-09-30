@@ -1,12 +1,14 @@
 ## Interface: 120100
-## Title: Gloom's Overlays
-## Notes: Cosmetic overlays and buff-triggered effects for WoW Midnight. Part of the Gloom Suite.
+## Title: Gloom's UI
+## Notes: Textures and player/target portraits placed on screen, in groups that move as one. Part of the Gloom Suite.
 ## IconTexture: Interface\AddOns\GloomsOverlays\Media\ui\logo.png
 ## Author: Gloom
 ## Version: @project-version@
 ## Dependencies: GloomsHub
 ## X-Website: https://github.com/GloomSuite/GloomsOverlays
 
+# ★ Gloom's UI (2026-09-29): the FOLDER stays GloomsOverlays, for the same
+# reason — renaming it would orphan every save file below.
 # ⚠ DO NOT RENAME THESE TWO GLOBALS.
 # The addon folder was renamed VibeOverlay → GloomsOverlays in Phase E. WoW keys
 # SavedVariables off the FOLDER name, so the save files were copied to
@@ -19,5 +21,5 @@
 ## SavedVariablesPerCharacter: VibeOverlayDBChar
 
 GloomsOverlays.lua
+GloomsOverlays_Portraits.lua
 GloomsOverlays_Pages.lua
-GloomsOverlays_Preview.lua

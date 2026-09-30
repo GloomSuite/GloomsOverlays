@@ -1,7 +1,14 @@
 -- ============================================================
--- GloomsOverlays.lua
+-- GloomsOverlays.lua — Gloom's UI (the folder keeps its old name: see the TOC)
 -- Core overlay engine. Overlays stored in VibeOverlayDB.
 -- Per-character active profile stored in VibeOverlayDBChar.
+-- ★ GLOOM'S UI (2026-09-29, the owner): Portraits folded in as one more overlay
+-- TYPE (`ov.kind = "portrait"`, drawn by GloomsOverlays_Portraits.lua; nil =
+-- a texture, every overlay saved before), and GROUPS: `profile.groups` =
+-- { id, name, x, y, collapsed }, and a member's `ov.group` = the id — its x/y
+-- are then an OFFSET from the group's anchor, so moving the group moves them
+-- all (Unit Frames' unit + pieces). The old Portraits settings were NOT
+-- carried over (the owner: he rebuilds them).
 -- ============================================================
 
 local addonName, addon = ...
@@ -50,25 +57,18 @@ function GloomsOverlays_GetProfileNames()
     return names
 end
 
+local function DeepCopy(v)
+    if type(v) ~= "table" then return v end
+    local t = {}
+    for k, x in pairs(v) do t[k] = DeepCopy(x) end
+    return t
+end
+
 function GloomsOverlays_NewProfile(name, copyFrom)
     if VibeOverlayDB.profiles[name] then return false, "Profile already exists" end
     if copyFrom and VibeOverlayDB.profiles[copyFrom] then
-        local src = VibeOverlayDB.profiles[copyFrom]
-        local new = { overlays = {} }
-        for _, ov in ipairs(src.overlays) do
-            local copy = {}
-            for k, v in pairs(ov) do
-                if type(v) == "table" then
-                    local t2 = {}
-                    for k2, v2 in pairs(v) do t2[k2] = v2 end
-                    copy[k] = t2
-                else
-                    copy[k] = v
-                end
-            end
-            new.overlays[#new.overlays+1] = copy
-        end
-        VibeOverlayDB.profiles[name] = new
+        -- every overlay AND every group (a member's `group` id stays valid)
+        VibeOverlayDB.profiles[name] = DeepCopy(VibeOverlayDB.profiles[copyFrom])
     else
         VibeOverlayDB.profiles[name] = { overlays = {} }
     end
@@ -96,13 +96,146 @@ function GloomsOverlays_RenameProfile(oldName, newName)
 end
 
 -- ============================================================
+-- Groups — a shared anchor; a member's x/y are an offset from it
+-- ============================================================
+
+function GloomsOverlays_GetGroups()
+    local p = GloomsOverlays_GetProfile()
+    p.groups = p.groups or {}
+    return p.groups
+end
+
+function GloomsOverlays_FindGroup(id)
+    if id == nil or not VibeOverlayDB then return nil end
+    for _, g in ipairs(GloomsOverlays_GetGroups()) do
+        if g.id == id then return g end
+    end
+end
+
+function GloomsOverlays_NewGroup(name)
+    local p = GloomsOverlays_GetProfile()
+    local groups = GloomsOverlays_GetGroups()
+    -- ids never repeat within a profile, so a stale `ov.group` can't adopt a new group
+    local id = p.nextGroup or 1
+    for _, g in ipairs(groups) do if (g.id or 0) >= id then id = g.id + 1 end end
+    p.nextGroup = id + 1
+    local g = { id = id, name = name, x = 0, y = 0 }
+    groups[#groups + 1] = g
+    return g
+end
+
+function GloomsOverlays_GroupMembers(g)
+    local out = {}
+    if not g then return out end
+    for _, ov in ipairs(GloomsOverlays_GetProfile().overlays) do
+        if ov.group == g.id then out[#out + 1] = ov end
+    end
+    return out
+end
+
+-- ★ ATTACHING AND SCALING A GROUP (2026-09-30, the owner). A group may be
+-- ATTACHED to a frame another tool offers (the Hub's Anchors.lua — Unit
+-- Frames' Player / Target Frame): `g.attach` = the anchor's id (nil = the
+-- screen). Its x / y are then measured from that frame's CENTRE, and every
+-- member is pinned to the frame itself, so moving the unit frame moves them
+-- LIVE, mid-drag too. `g.hideWithAnchor`: the members show only while that
+-- frame does. `g.scale` (nil = 1) multiplies every member's size AND its
+-- offset from the group's anchor. Strata and level stay each overlay's own.
+
+-- What a group is pinned to: the anchor's frame, or the screen.
+function GloomsOverlays_GroupRel(g)
+    local f = g and g.attach and GloomsHub.AnchorFrame and GloomsHub:AnchorFrame(g.attach)
+    return f or UIParent, f ~= nil
+end
+local function GroupScale(g) return (g and g.scale) or 1 end
+
+-- Where a frame's centre is, from the screen's centre, in UIParent units.
+local function CenterOffset(f)
+    if f == UIParent then return 0, 0 end
+    local cx, cy = f:GetCenter()
+    local ux, uy = UIParent:GetCenter()
+    if not (cx and ux) then return 0, 0 end
+    local k = f:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    return cx * k - ux, cy * k - uy
+end
+-- An offering tool's frames arrived after we placed things (Unit Frames loads
+-- after us): place everything again, so an attached group finds its frame.
+if GloomsHub.OnAnchorsChanged then
+    GloomsHub:OnAnchorsChanged(function() if VibeOverlayDB and VibeOverlayDB.profiles then GloomsOverlays_ApplyAll() end end)
+end
+
+-- A group's anchor point on the screen (from the screen's centre).
+function GloomsOverlays_GroupOrigin(g)
+    local ax, ay = CenterOffset((GloomsOverlays_GroupRel(g)))
+    return ax + (g.x or 0), ay + (g.y or 0)
+end
+
+-- Where an overlay is PINNED: the frame, and its offset from that frame's centre.
+function GloomsOverlays_Place(ov)
+    local g = ov.group and GloomsOverlays_FindGroup(ov.group)
+    if not g then return UIParent, ov.x or 0, ov.y or 0 end
+    local k = GroupScale(g)
+    return (GloomsOverlays_GroupRel(g)), (g.x or 0) + (ov.x or 0) * k, (g.y or 0) + (ov.y or 0) * k
+end
+-- Where an overlay SITS on screen (from the screen's centre).
+function GloomsOverlays_Pos(ov)
+    local rel, x, y = GloomsOverlays_Place(ov)
+    local ax, ay = CenterOffset(rel)
+    return ax + x, ay + y
+end
+
+-- An overlay's box: a texture's width x height, a portrait's square — times
+-- its group's scale.
+function GloomsOverlays_BoxSize(ov)
+    local g = ov.group and GloomsOverlays_FindGroup(ov.group)
+    local k = GroupScale(g)
+    if ov.kind == "portrait" then
+        local s = math.max(1, ov.size or 350) * k
+        return s, s
+    end
+    return math.max(1, ov.width or 200) * k, math.max(1, ov.height or 200) * k
+end
+
+-- Into a group (nil = out of any), KEEPING its place on screen: the offset is
+-- re-based on the new group's anchor (and its scale).
+function GloomsOverlays_SetGroup(ov, id)
+    local x, y = GloomsOverlays_Pos(ov)
+    local g = id and GloomsOverlays_FindGroup(id)
+    ov.group = g and g.id or nil
+    if g then
+        local ox, oy = GloomsOverlays_GroupOrigin(g)
+        local k = GroupScale(g)
+        ov.x = math.floor((x - ox) / k + 0.5)
+        ov.y = math.floor((y - oy) / k + 0.5)
+    else
+        ov.x, ov.y = math.floor(x + 0.5), math.floor(y + 0.5)
+    end
+end
+
+-- Attach a group to an anchor (nil = the screen), KEEPING it where it is.
+function GloomsOverlays_SetAttach(g, id)
+    local ox, oy = GloomsOverlays_GroupOrigin(g)
+    g.attach = id
+    local ax, ay = CenterOffset((GloomsOverlays_GroupRel(g)))
+    g.x, g.y = math.floor(ox - ax + 0.5), math.floor(oy - ay + 0.5)
+end
+
+-- Delete a group; its members stay where they are, ungrouped.
+function GloomsOverlays_DeleteGroup(g)
+    for _, ov in ipairs(GloomsOverlays_GroupMembers(g)) do GloomsOverlays_SetGroup(ov, nil) end
+    local groups = GloomsOverlays_GetGroups()
+    for i, gg in ipairs(groups) do if gg == g then table.remove(groups, i); break end end
+end
+
+-- ============================================================
 -- Condition evaluation
 -- ============================================================
 
 -- PREVIEW (2026-09-27, the owner: a lit eye should show the overlay NOW, out
--- of combat too, while the windows are open — Auras' eye). While the Overlays
--- windows are open, an overlay whose eye is lit shows whatever its conditions
--- say — even one switched off. Closing the windows ends it; conditions rule
+-- of combat too, while the windows are open — Auras' eye). While the windows
+-- are open, the eye alone decides: lit shows it whatever its conditions say —
+-- even one switched off — and unlit hides it, even an Always Visible one
+-- (2026-09-29, Auras' rule). Closing the windows ends it; conditions rule
 -- again. The eye (the owner, 2026-09-27, as Auras'): `ov.preview` is saved and
 -- is the overlay's state while NOT selected; the SELECTED one shows at once
 -- whatever that says (`pickShow`, fresh on every new selection), and its eye
@@ -125,8 +258,29 @@ function GloomsOverlays_ToggleEye(ov)
     GloomsOverlays_ApplyAll()
 end
 
+-- A group's eye sets every member's at once.
+function GloomsOverlays_SetEye(ov, on)
+    if not ov then return end
+    if ov == pick then pickShow = on and true or false else ov.preview = on and true or nil end
+end
+
+-- an attached group set to show only with its frame
+local function AnchorHides(ov)
+    local g = ov.group and GloomsOverlays_FindGroup(ov.group)
+    if not (g and g.attach and g.hideWithAnchor) then return false end
+    local f = GloomsHub.AnchorFrame and GloomsHub:AnchorFrame(g.attach)
+    return f ~= nil and not f:IsVisible()
+end
+
 local function ShouldShow(ov)
-    if Previewed(ov) then return true end
+    -- ★ While the windows are open the EYE decides, both ways (2026-09-29, the
+    -- owner: "when the eye is off and the addon is open, the aura is NOT
+    -- displayed" — Auras' rule, D:RefreshForced). The Overlays port of
+    -- 2026-09-27 only ever ADDED, so an Always Visible overlay couldn't be
+    -- hidden while placing others. Closing the windows hands back to the
+    -- conditions below.
+    if previewing then return GloomsOverlays_EyeOn(ov) end
+    if AnchorHides(ov) then return false end
     local c = ov.condition or "always"
     for word in c:gmatch("[^,]+") do
         if word == "always"   then return true end
@@ -184,9 +338,9 @@ local function BuildOverlayFrame(ov, index)
     tex:SetTexCoord(0, 1, 0, 1)
     tex:SetRotation(0)
 
-    f:SetSize(math.max(1, ov.width or 200), math.max(1, ov.height or 200))
+    f:SetSize(GloomsOverlays_BoxSize(ov))
     f:ClearAllPoints()
-    f:SetPoint("CENTER", UIParent, "CENTER", ov.x or 0, ov.y or 0)
+    do local rel, x, y = GloomsOverlays_Place(ov); f:SetPoint("CENTER", rel, "CENTER", x, y) end
     f:SetFrameStrata(ov.strata or "HIGH")
     -- Level orders overlays WITHIN a strata (strata always wins). Set after the
     -- strata, and always — a recycled frame carries its last occupant's level.
@@ -301,23 +455,49 @@ local function ParkFramesFrom(index)
     end
 end
 
+local RefreshHandles   -- the drag handles (below)
+
 function GloomsOverlays_ApplyAll()
     wipe(liveOverlays)
 
     local profile = VibeOverlayDB and GloomsOverlays_GetProfile()
-    if not profile then return ParkFramesFrom(1) end
+    if not profile then
+        ParkFramesFrom(1)
+        if addon.PR then addon.PR.ParkFrom(1) end
+        return
+    end
 
     -- `n` walks the POOL, not the overlay list: switched-off overlays take no
-    -- slot, so the enabled ones always occupy 1..n with no gaps.
-    local n = 0
+    -- slot, so the enabled ones always occupy 1..n with no gaps. Portraits
+    -- have their own pool (a model and a portrait frame each), walked by `pn`.
+    -- ★ Keyed by the overlay's TABLE, not its name: two overlays may share a name.
+    local n, pn = 0, 0
     for _, ov in ipairs(profile.overlays) do
         if ov.enabled ~= false or Previewed(ov) then
-            n = n + 1
-            local f, tex = BuildOverlayFrame(ov, n)
-            liveOverlays[ov.name] = { frame=f, tex=tex, config=ov }
+            if ov.kind == "portrait" then
+                if addon.PR then
+                    pn = pn + 1
+                    liveOverlays[ov] = addon.PR.Build(ov, pn, ShouldShow(ov))
+                end
+            else
+                n = n + 1
+                local f, tex = BuildOverlayFrame(ov, n)
+                liveOverlays[ov] = { frame=f, tex=tex, config=ov }
+            end
         end
     end
     ParkFramesFrom(n + 1)
+    if addon.PR then addon.PR.ParkFrom(pn + 1) end
+    -- an attached group that hides with its frame hears the frame show / hide
+    for _, g in ipairs(profile.groups or {}) do
+        local f = g.attach and g.hideWithAnchor and GloomsHub.AnchorFrame and GloomsHub:AnchorFrame(g.attach)
+        if f and not f.gloomsOverlaysHooked then
+            f.gloomsOverlaysHooked = true
+            f:HookScript("OnShow", function() if addon.UpdateVisibility then addon.UpdateVisibility() end end)
+            f:HookScript("OnHide", function() if addon.UpdateVisibility then addon.UpdateVisibility() end end)
+        end
+    end
+    RefreshHandles()
 end
 
 -- ============================================================
@@ -339,14 +519,25 @@ end
 
 function GloomsOverlays_ApplyLayout(ov)
     if not ov then return end
-    local entry = liveOverlays[ov.name]
-    local f = entry and entry.frame
-    if not f then return end
-    f:SetSize(math.max(1, ov.width or 200), math.max(1, ov.height or 200))
-    f:ClearAllPoints()
-    f:SetPoint("CENTER", UIParent, "CENTER", ov.x or 0, ov.y or 0)
-    f:SetFrameStrata(ov.strata or "HIGH")
-    f:SetFrameLevel(ov.level or GloomsOverlays_GetDefaultLevel())
+    local entry = liveOverlays[ov]
+    if entry and entry.slot then
+        addon.PR.Layout(entry.slot, ov)
+    elseif entry and entry.frame then
+        local f = entry.frame
+        f:SetSize(GloomsOverlays_BoxSize(ov))
+        f:ClearAllPoints()
+        local rel, x, y = GloomsOverlays_Place(ov)
+        f:SetPoint("CENTER", rel, "CENTER", x, y)
+        f:SetFrameStrata(ov.strata or "HIGH")
+        f:SetFrameLevel(ov.level or GloomsOverlays_GetDefaultLevel())
+    end
+    RefreshHandles()
+end
+
+-- A GROUP moved: re-place every member.
+function GloomsOverlays_ApplyGroupLayout(g)
+    for _, ov in ipairs(GloomsOverlays_GroupMembers(g)) do GloomsOverlays_ApplyLayout(ov) end
+    RefreshHandles()
 end
 
 -- ============================================================
@@ -354,13 +545,156 @@ end
 -- ============================================================
 
 local function UpdateVisibility()
-    for _, entry in pairs(liveOverlays) do
-        if ShouldShow(entry.config) then
-            entry.frame:Show()
+    for ov, entry in pairs(liveOverlays) do
+        if entry.slot then
+            addon.PR.Show(entry.slot, ShouldShow(ov))
         else
-            entry.frame:Hide()
+            entry.frame:SetShown(ShouldShow(ov))
         end
     end
+end
+addon.UpdateVisibility = UpdateVisibility
+
+-- ============================================================
+-- DRAG HANDLES (Gloom's UI, 2026-09-29 — Unit Frames' per-piece dragging).
+-- While the windows are open, the SELECTED overlay wears a lime outline and
+-- its group a green box around every member; drag the outline to move just
+-- that overlay, the box to move the whole group. Letting go keeps the whole
+-- units the drag landed on; nothing else changes. Closing the windows hides
+-- both, and nothing on screen takes the mouse again.
+-- ★ Moved from the SAVED numbers, never from what a frame reports — the rule
+-- Unit Frames learned from a secret-geometry BugSack (Hub FINDINGS §21).
+-- ============================================================
+
+local editItem, editGroup     -- what the windows have selected (nil = locked)
+local moveListeners = {}
+function GloomsOverlays_OnMoved(fn) moveListeners[#moveListeners + 1] = fn end
+
+local function Cursor()
+    local x, y = GetCursorPosition()
+    local s = UIParent:GetEffectiveScale()
+    return x / s, y / s
+end
+
+local function MakeHandle(r, g, b, level)
+    local h = CreateFrame("Frame", nil, UIParent)
+    h:SetFrameStrata("HIGH"); h:SetFrameLevel(level)
+    h:EnableMouse(true); h:Hide()
+    local fill = h:CreateTexture(nil, "BACKGROUND"); fill:SetAllPoints(); fill:SetColorTexture(r, g, b, 0.08)
+    local function edge(p1, p2, horiz)
+        local t = h:CreateTexture(nil, "OVERLAY"); t:SetColorTexture(r, g, b, 0.9)
+        t:SetPoint(p1); t:SetPoint(p2); if horiz then t:SetHeight(1) else t:SetWidth(1) end
+    end
+    edge("TOPLEFT", "TOPRIGHT", true); edge("BOTTOMLEFT", "BOTTOMRIGHT", true)
+    edge("TOPLEFT", "BOTTOMLEFT"); edge("TOPRIGHT", "BOTTOMRIGHT")
+    -- h.target() → the table whose x/y the drag writes; h.apply(t) re-places it
+    local function finish(self)
+        self:SetScript("OnUpdate", nil)
+        if not self.moving then return end
+        self.moving = false
+        for _, fn in ipairs(moveListeners) do fn() end
+        RefreshHandles()
+    end
+    h:SetScript("OnMouseDown", function(self, button)
+        if button ~= "LeftButton" then return end
+        local t = self.target and self.target()
+        if not t then return end
+        local cx, cy = Cursor()
+        local ox, oy = t.x or 0, t.y or 0
+        self.moving = true
+        self:SetScript("OnUpdate", function(me)
+            if not IsMouseButtonDown("LeftButton") then finish(me); return end
+            local x, y = Cursor()
+            local k = me.scaleOf and me.scaleOf(t) or 1
+            t.x = math.floor(ox + (x - cx) / k + 0.5)
+            t.y = math.floor(oy + (y - cy) / k + 0.5)
+            me.apply(t)
+            for _, fn in ipairs(moveListeners) do fn(true) end
+        end)
+    end)
+    h:SetScript("OnMouseUp", function(self) finish(self) end)
+    return h
+end
+
+local itemHandle, groupHandle
+local function InProfile(ov)
+    if not (ov and VibeOverlayDB) then return false end
+    for _, o in ipairs(GloomsOverlays_GetProfile().overlays) do if o == ov then return true end end
+    return false
+end
+
+RefreshHandles = function()
+    if not (itemHandle and groupHandle) then return end
+    local ov = InProfile(editItem) and editItem or nil
+    local g = editGroup and GloomsOverlays_FindGroup(editGroup.id) == editGroup and editGroup
+        or (ov and ov.group and GloomsOverlays_FindGroup(ov.group)) or nil
+    if ov then
+        local w, h = GloomsOverlays_BoxSize(ov)
+        local rel, x, y = GloomsOverlays_Place(ov)
+        itemHandle:SetSize(w, h)
+        itemHandle:ClearAllPoints()
+        itemHandle:SetPoint("CENTER", rel, "CENTER", x, y)
+        itemHandle:Show()
+    elseif not itemHandle.moving then
+        itemHandle:Hide()
+    end
+    if g then
+        -- the box around every member (4 out), pinned where the group is pinned;
+        -- an empty group is a 40 square at its anchor
+        local rel = GloomsOverlays_GroupRel(g)
+        local l, r, b, t
+        for _, m in ipairs(GloomsOverlays_GroupMembers(g)) do
+            local _, x, y = GloomsOverlays_Place(m)
+            local w, h = GloomsOverlays_BoxSize(m)
+            l = math.min(l or math.huge, x - w / 2); r = math.max(r or -math.huge, x + w / 2)
+            b = math.min(b or math.huge, y - h / 2); t = math.max(t or -math.huge, y + h / 2)
+        end
+        local gx, gy = g.x or 0, g.y or 0
+        if not l then l, r, b, t = gx - 20, gx + 20, gy - 20, gy + 20
+        else l, r, b, t = l - 4, r + 4, b - 4, t + 4 end
+        groupHandle:SetSize(r - l, t - b)
+        groupHandle:ClearAllPoints()
+        groupHandle:SetPoint("CENTER", rel, "CENTER", (l + r) / 2, (b + t) / 2)
+        groupHandle.group = g
+        groupHandle:Show()
+    elseif not groupHandle.moving then
+        groupHandle:Hide()
+    end
+end
+
+-- ARROW-KEY NUDGES (the Hub's Undo.lua key frame, 2026-09-30): move a group,
+-- or one overlay, by (dx, dy) SCREEN pixels. A member of a scaled group moves
+-- 1/scale of its own offset units, so a press is one pixel on screen.
+function GloomsOverlays_Nudge(t, dx, dy)
+    if not t then return end
+    if t.overlays == nil and t.id and t.name and GloomsOverlays_FindGroup(t.id) == t then
+        t.x, t.y = (t.x or 0) + dx, (t.y or 0) + dy
+        GloomsOverlays_ApplyGroupLayout(t)
+    else
+        local g = t.group and GloomsOverlays_FindGroup(t.group)
+        local k = (g and g.scale) or 1
+        t.x, t.y = (t.x or 0) + dx / k, (t.y or 0) + dy / k
+        GloomsOverlays_ApplyLayout(t)
+    end
+    for _, fn in ipairs(moveListeners) do fn(true) end
+end
+
+-- The windows call this on every selection, and with nothing when they close.
+function GloomsOverlays_SetEditing(ov, group)
+    if not itemHandle then
+        itemHandle = MakeHandle(0.44, 0.93, 0.25, 101)   -- lime, above the group's box
+        itemHandle.target = function() return InProfile(editItem) and editItem or nil end
+        itemHandle.scaleOf = function(ov2)
+            local g2 = ov2.group and GloomsOverlays_FindGroup(ov2.group)
+            return (g2 and g2.scale) or 1
+        end
+        itemHandle.apply = function(ov2) GloomsOverlays_ApplyLayout(ov2) end
+        groupHandle = MakeHandle(0.2, 0.8, 0.4, 100)      -- green
+        groupHandle.target = function() return groupHandle.group end
+        groupHandle.apply = function(g) GloomsOverlays_ApplyGroupLayout(g) end
+    end
+    editItem, editGroup = ov, group
+    RefreshHandles()
 end
 
 -- ============================================================
@@ -392,7 +726,7 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
                 ["Default"] = { overlays = VibeOverlayDB.overlays }
             }
             VibeOverlayDB.overlays = nil
-            print("|cff936bffGloom's Overlays|r: migrated overlays to Default profile.")
+            print("|cff936bffGloom's UI|r: migrated overlays to Default profile.")
         end
 
         if not VibeOverlayDB.profiles then VibeOverlayDB.profiles = {} end
@@ -404,7 +738,7 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
         hasTarget = UnitExists("target")
         isCasting = (UnitCastingInfo("player") ~= nil) or (UnitChannelInfo("player") ~= nil)
         GloomsOverlays_ApplyAll()
-        print("|cff936bffGloom's Overlays|r loaded. |cffcccccc/go|r opens the Overlays tab.")
+        print("|cff936bffGloom's UI|r loaded. |cffcccccc/gui|r opens it.")
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true
@@ -445,7 +779,11 @@ end)
 -- shell owns open/close/switch semantics (CONTRACTS §2). `list`, `debug` and
 -- `reload` stay chat-only. The old PLAYER_LOGIN slash-wrapping in
 -- GloomsOverlays_Preview.lua is gone: every branch lives here now.
-SLASH_GLOOMSOVERLAYS1 = "/go"
+-- Gloom's UI (2026-09-29): /gui is its own; /go (Overlays) and /gp (Portraits,
+-- folded in) keep working.
+SLASH_GLOOMSOVERLAYS1 = "/gui"
+SLASH_GLOOMSOVERLAYS2 = "/go"
+SLASH_GLOOMSOVERLAYS3 = "/gp"
 SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
     msg = msg and msg:lower():match("^%s*(.-)%s*$") or ""
 
@@ -453,7 +791,11 @@ SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
         GloomsHub:ToggleWindow("overlays")
 
     elseif msg == "preview" or msg == "p" then
-        if GloomsOverlays_ToggleAssetBrowser then GloomsOverlays_ToggleAssetBrowser() end
+        GloomsHub:Open("overlays")
+        if GloomsOverlays_BrowseAssets then GloomsOverlays_BrowseAssets(false) end
+
+    elseif msg == "plates" then
+        if addon.PR then addon.PR.PlatesProbe() end
 
     elseif msg == "reload" then
         ReloadUI()
@@ -461,10 +803,10 @@ SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
     elseif msg == "list" then
         local profile  = GloomsOverlays_GetProfile()
         local overlays = profile and profile.overlays or {}
-        print("|cff936bffGloom's Overlays|r — profile: |cffcccccc" .. GloomsOverlays_GetActiveProfileName() .. "|r — " .. #overlays .. " overlay(s):")
+        print("|cff936bffGloom's UI|r — profile: |cffcccccc" .. GloomsOverlays_GetActiveProfileName() .. "|r — " .. #overlays .. " overlay(s):")
         for i, ov in ipairs(overlays) do
             local state = (ov.enabled ~= false) and "|cff00ff00on|r" or "|cffaaaaaa off|r"
-            print(string.format("  %d. %s [%s]", i, ov.name or "?", state))
+            print(string.format("  %d. %s%s [%s]", i, ov.name or "?", ov.kind == "portrait" and " (portrait)" or "", state))
         end
 
     elseif msg == "debug" then
@@ -473,22 +815,24 @@ SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
         local liveCount = 0
         for _ in pairs(liveOverlays) do liveCount = liveCount + 1 end
         print("|cff9966ffGloomsOverlays DEBUG|r — profile: " .. GloomsOverlays_GetActiveProfileName() .. " — " .. #overlays .. " saved, " .. liveCount .. " live, combat=" .. tostring(inCombat))
-        for name, entry in pairs(liveOverlays) do
-            local fr    = entry.frame
+        for ov, entry in pairs(liveOverlays) do
+            local name  = ov.name or "?"
+            local fr    = entry.frame or entry.slot.anchor
             local shown = fr:IsShown() and "|cff00ff00SHOWN|r" or "|cffff4444HIDDEN|r"
             local x, y  = fr:GetCenter()
             local w, h  = fr:GetSize()
             print(string.format("  [%s] %s  center=(%.0f,%.0f) size=%dx%d alpha=%.2f condition=%s",
                 name, shown, x or -1, y or -1, w, h,
-                entry.tex:GetAlpha(), entry.config.condition or "always"))
+                entry.tex and entry.tex:GetAlpha() or (ov.alpha or 1), entry.config.condition or "always"))
         end
         if next(liveOverlays) == nil then
             print("  (no live frames)")
         end
         -- each overlay's frame scale, and Unit Frames' health display beside
         -- them: the size check for "the same number, the same size" (2026-09-27)
-        for name, entry in pairs(liveOverlays) do
-            print(string.format("  [%s] saved %sx%s, effective scale %.3f", name, tostring(entry.config.width), tostring(entry.config.height), entry.frame:GetEffectiveScale()))
+        for ov, entry in pairs(liveOverlays) do
+            local fr = entry.frame or entry.slot.anchor
+            print(string.format("  [%s] saved %sx%s, effective scale %.3f", ov.name or "?", tostring(entry.config.width), tostring(entry.config.height), fr:GetEffectiveScale()))
         end
         local GU = _G.GloomsUnitFrames
         local uf = GU and GU.Frame and GU:Frame("player")
@@ -503,11 +847,12 @@ SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
         end
 
     else
-        print("|cff936bffGloom's Overlays|r commands:")
-        print("  |cffcccccc/go|r                         — open the Overlays tab")
-        print("  |cffcccccc/go preview|r   (or /go p)    — open the asset browser")
-        print("  |cffcccccc/go list|r                    — list overlays in chat")
-        print("  |cffcccccc/go debug|r                   — print live frame info")
-        print("  |cffcccccc/go reload|r                  — reload the UI")
+        print("|cff936bffGloom's UI|r commands (/go and /gp work too):")
+        print("  |cffcccccc/gui|r                         — open Gloom's UI")
+        print("  |cffcccccc/gui preview|r   (or /gui p)   — open the texture browser")
+        print("  |cffcccccc/gui list|r                    — list overlays in chat")
+        print("  |cffcccccc/gui debug|r                   — print live frame info")
+        print("  |cffcccccc/gui plates|r                  — what the target portrait's nameplate cache holds")
+        print("  |cffcccccc/gui reload|r                  — reload the UI")
     end
 end

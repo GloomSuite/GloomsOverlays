@@ -63,6 +63,31 @@ Renaming them looks like harmless cleanup and is silent data loss:
 The original `VibeOverlay.lua` save files are still on disk untouched as the rollback. If the
 globals ever *do* get renamed, it needs a real migration shim, not a find-and-replace.
 
+## ★ GLOOM'S UI (2026-09-29/30) — Overlays + Portraits, and groups
+
+**This addon is "Gloom's UI" (gloomUI, `/gui`; `/go` and `/gp` still work).** The FOLDER stays
+`GloomsOverlays` (the rule above). The owner's decisions, not to be reopened:
+- **A portrait is an overlay TYPE** — `ov.kind = "portrait"` (`unit` player | target, `mode` 3d | 2d,
+  `size`, the camera `facing zoom modelYOffset pitch`), drawn by **`GloomsOverlays_Portraits.lua`**
+  (Gloom's Portraits' delve-measured instance handling, unchanged — Hub FINDINGS §17). ONE position
+  (no separate 3D / 2D places). The old Portraits settings were NOT carried over (the owner).
+- **Groups** (`profile.groups`: id, name, x, y, collapsed, `attach`, `hideWithAnchor`, `scale`): a
+  member's x / y are its offset from the group's anchor, times the group's `scale`. **Attach To** pins
+  the group to a frame another tool offers (the Hub's ANCHORS — Unit Frames' Player / Target Frame);
+  everything is placed through `GloomsOverlays_Place(ov)` → (frame, x, y), and `GloomsOverlays_Pos`
+  is only for converting (Move to Group / Attach keep a thing where it is on screen).
+- **On screen while the windows are open:** the selected overlay wears a lime outline, its group a
+  green box; drag either. **The arrow keys nudge** the group (Group section open) or the overlay
+  (Size & Position open) — the Hub's `nudge` hook, 1 px / Shift 10.
+- **The eye decides both ways while the windows are open** (Auras' rule, 2026-09-30): lit shows,
+  unlit HIDES — even an Always Visible overlay.
+- **The last selection** is remembered per character and profile in `VibeOverlayDBChar.lastPick`
+  (never in the profile — selecting must not be an undo step).
+- **Undo** is the Hub's (the `undo` block at the end of `GloomsOverlays_Pages.lua`).
+- **The texture browser is the Hub's** (`GloomsHub:PickTexture`, gloomMEDIA → Game Textures); the
+  Texture field's Browse and Browse Assets open it. `ov.sheet` (a spritesheet's grid) is set in
+  Overlay & Texture → Spritesheet or carried in by the browser.
+
 ## The windows (2026-09-27, the two-window design) — `GloomsOverlays_Pages.lua`
 
 The settings are **`GloomsOverlays_Pages.lua`** (`SKIN_NEEDS = 17`), built without a mock from the
@@ -78,8 +103,8 @@ It carried the "SKIN_NEEDS stays at 4" decision; that reasoning died with it (th
 selected; the selected overlay shows while the windows are open whatever that says, and its eye
 toggles only that (`GloomsOverlays_SetPick`, `GloomsOverlays_ToggleEye`, `GloomsOverlays_EyeOn` in the
 engine; `GloomsOverlays_SetPreview(on)` from the windows' open/close). ON/OFF is the Visibility
-section's switch (`ov.enabled`). **The asset browser** (`_Preview.lua`, still the old kit) docks 20
-right of the settings window via `GloomsOverlays_DockDrawer`. `/go debug` prints each overlay's saved
+section's switch (`ov.enabled`). The old asset browser (`_Preview.lua`) is OUT of the TOC — delete it
+once the owner approves (the Hub's texture browser replaced it). `/go debug` prints each overlay's saved
 and real size and scale, and Unit Frames' health display beside them.
 
 ## Conventions
