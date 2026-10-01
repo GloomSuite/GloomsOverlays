@@ -84,6 +84,12 @@ globals ever *do* get renamed, it needs a real migration shim, not a find-and-re
 - **The last selection** is remembered per character and profile in `VibeOverlayDBChar.lastPick`
   (never in the profile — selecting must not be an undo step).
 - **Undo** is the Hub's (the `undo` block at the end of `GloomsOverlays_Pages.lua`).
+- **A group can be switched OFF** (`g.enabled == false`, 2026-09-30 — "a whole UI setup" kept while
+  another is tried): every member is off in play, settings kept; while the windows are open the eyes
+  decide, and the switch sets the members' eyes too. `GloomsOverlays_GroupOff(ov)`.
+- **A new overlay starts at its image's size** (`ov.autoSize`, `FitToImage` in the pages, the Hub's
+  `GloomsHub:TextureSize`): its FIRST texture sets Width / Height (one frame's for a sheet), only while
+  still 200 × 200. Once.
 - **The texture browser is the Hub's** (`GloomsHub:PickTexture`, gloomMEDIA → Game Textures); the
   Texture field's Browse and Browse Assets open it. `ov.sheet` (a spritesheet's grid) is set in
   Overlay & Texture → Spritesheet or carried in by the browser.

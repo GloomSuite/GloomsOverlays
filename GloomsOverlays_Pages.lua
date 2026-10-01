@@ -38,7 +38,7 @@
 -- no longer loaded; delete it once the owner approves these windows.
 -- ============================================================
 
-local SKIN_NEEDS = 17
+local SKIN_NEEDS = 20   -- 20: UI.gBrackets (the drag handles); 19: gDial `fine` (position dials)
 local Skin, skinMinor
 if LibStub then Skin, skinMinor = LibStub("LibGloomSkin-1.0", true) end
 if not Skin then return end
@@ -127,7 +127,31 @@ local function NewOverlay(name, texture, sheet)
     flipH = false, flipV = false, spinSpeed = 0, spinDir = "cw",
     tintR = 1, tintG = 1, tintB = 1,
     enabled = true, condition = "always", sheet = sheet,
+    autoSize = true,   -- still the default size: its first texture sets it (FitToImage)
   }
+end
+
+-- ★ A NEW OVERLAY STARTS AT ITS IMAGE'S SIZE (2026-09-30, the owner). The first
+-- texture a new overlay gets — made from the browser, or chosen afterwards —
+-- sets Width / Height to the image's pixel size (one frame's, for a
+-- spritesheet), asked of the Hub (GloomsHub:TextureSize; a file's size can take
+-- a moment to arrive). Only while it's untouched: `ov.autoSize` from NewOverlay,
+-- and still 200 x 200 — sized by hand first, it's left alone. Once only.
+local function FitToImage(ov)
+  if not (ov and ov.autoSize) then return end
+  if (ov.width or 200) ~= 200 or (ov.height or 200) ~= 200 then ov.autoSize = nil; return end
+  if not GloomsHub.TextureSize or (ov.texture or "") == "" then return end
+  local function apply(w, h)
+    if not ov.autoSize or (ov.width or 200) ~= 200 or (ov.height or 200) ~= 200 then return end
+    local sh = ov.sheet
+    if sh and (sh.cols or 1) * (sh.rows or 1) > 1 then w, h = w / sh.cols, h / sh.rows end
+    ov.width, ov.height = math.max(1, math.floor(w + 0.5)), math.max(1, math.floor(h + 0.5))
+    ov.autoSize = nil
+    GloomsOverlays_ApplyAll()
+    if P.refreshAll then P.refreshAll() end
+  end
+  local w, h = GloomsHub:TextureSize(ov.texture, apply)
+  if w then apply(w, h) end
 end
 -- A portrait starts as the player's 3D model at the old Portraits' size and
 -- camera, on Medium (under most of the UI, as Portraits drew).
@@ -273,8 +297,8 @@ local function Note(parent, text, w)
   n:SetWidth(w or 360); n:SetJustifyH("LEFT"); n:SetWordWrap(true); n:SetText(text)
   return n
 end
-local function NameField(parent, label, get, set)
-  local f = cell(parent, label, 360, function(c, w)
+local function NameField(parent, label, get, set, w)
+  local f = cell(parent, label, w or 360, function(c, w)
     return UI.gField(c, w, {
       commit = function(text)
         text = (text or ""):match("^%s*(.-)%s*$")
@@ -609,6 +633,7 @@ function P.renderList()
         UI.setFont(r.name, FONT.saB, 12)
         r.name:ClearAllPoints(); r.name:SetPoint("LEFT", 12, 0)
         r.name:SetText(e.kind == "group" and (e.group.name or "Group") or "Ungrouped"); r.name:SetTextColor(1, 1, 1)
+        if e.kind == "group" and e.group.enabled == false then r.name:SetAlpha(0.5) end
         if e.kind == "group" then
           r.eye:Show()
           if groupEyeOn(e.group) then UI.tint(r.eye.t, LIME) else r.eye.t:SetVertexColor(1, 1, 1, 0.4) end
@@ -620,7 +645,7 @@ function P.renderList()
         UI.setFont(r.name, FONT.sa, 10)
         r.name:SetText(ov.name or "Overlay"); r.name:SetTextColor(1, 1, 1)
         -- a switched-off overlay greys; the eye is lime while it shows on screen
-        r.name:SetAlpha(ov.enabled ~= false and 1 or 0.5)
+        r.name:SetAlpha((ov.enabled ~= false and not GloomsOverlays_GroupOff(ov)) and 1 or 0.5)
         r.eye:Show()
         if GloomsOverlays_EyeOn(ov) then UI.tint(r.eye.t, LIME) else r.eye.t:SetVertexColor(1, 1, 1, 0.4) end
         if ov == selOv then r.hl:SetColorTexture(VIOLET.r, VIOLET.g, VIOLET.b, 0.3); r.hl:Show() end
@@ -811,7 +836,7 @@ local function buildTexture(parent)
         -- a spritesheet keeps its grid, re-cut from the new file
         local sh = ov.sheet
         if sh then ov.sheet = GloomsOverlays_SheetFor(t, sh.cols, sh.rows, sh.frames, sh.fps) end
-        LiveApply("texture", t); P.renderList(); s.refresh()
+        LiveApply("texture", t); FitToImage(ov); P.renderList(); s.refresh()
       end,
       revert = function(self) local ov = CurrentOverlay(); self:SetText(ov and ov.texture or "") end,
     })
@@ -1014,8 +1039,8 @@ local function buildSize(parent)
   end)
   attachTip(link, "Keep proportions", "Lit: changing the width changes the height with it, and the other way round, keeping the proportions they had when you lit it. Unlit: they move apart. Click to switch.")
   link:SetPoint("TOPLEFT", 173, 0)
-  local x = Dial(f, 170, { label = "Horizontal Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("x", 0), set = setL("x") })
-  local y = Dial(f, 170, { label = "Vertical Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("y", 0), set = setL("y") })
+  local x = Dial(f, 170, { fine = true, label = "Horizontal Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("x", 0), set = setL("x") })
+  local y = Dial(f, 170, { fine = true, label = "Vertical Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("y", 0), set = setL("y") })
   place(w, 0, 0); place(x, 190, 0); place(h, 0, 41); place(y, 190, 41)
   local note = groupNote(f, s, 82)
   s.ctrls = { w, h, x, y, link }
@@ -1029,8 +1054,8 @@ local function buildPortraitSize(parent)
   local function setL(field) return function(v) LiveLayout(field, v) end end
   local size = Dial(f, 170, { label = "Size", min = 20, max = 1000, step = 1, unit = "px", dragPx = 1200, get = num("size", 350), set = setL("size") })
   attachTip(size.strip, "Size", "A portrait is square: this is its width and its height.")
-  local x = Dial(f, 170, { label = "Horizontal Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("x", 0), set = setL("x") })
-  local y = Dial(f, 170, { label = "Vertical Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("y", 0), set = setL("y") })
+  local x = Dial(f, 170, { fine = true, label = "Horizontal Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("x", 0), set = setL("x") })
+  local y = Dial(f, 170, { fine = true, label = "Vertical Position", min = -1000, max = 1000, step = 1, unit = "px", dragPx = 1600, get = num("y", 0), set = setL("y") })
   place(size, 0, 0); place(x, 190, 0); place(y, 190, 41)
   local note = groupNote(f, s, 82)
   s.ctrls = { size, x, y }
@@ -1190,8 +1215,20 @@ end
 -- ===========================================================================
 local function buildGroup(parent)
   local f, s = Section(parent, 160, true)
-  local nameF = NameField(f, "Group Name", CurrentGroup, function(text) local g = CurrentGroup(); if g then g.name = text end end)
+  local nameF = NameField(f, "Group Name", CurrentGroup, function(text) local g = CurrentGroup(); if g then g.name = text end end, 170)
   place(nameF, 0, 0)
+  -- the whole group on / off (2026-09-30) — a set-up kept whole while another is tried.
+  -- Switching it also sets the members' eyes, so the windows show the change at once.
+  local onOff = Switch(f, "Group", 170, OFFON,
+    function() local g = CurrentGroup(); return (g and g.enabled ~= false) and true or false end,
+    function(v)
+      local g = CurrentGroup(); if not g then return end
+      if v then g.enabled = nil else g.enabled = false end   -- (not `(not v) and false or nil` — that is always nil)
+      for _, m in ipairs(GloomsOverlays_GroupMembers(g)) do GloomsOverlays_SetEye(m, v) end
+      GloomsOverlays_ApplyAll(); P.refreshAll()
+    end)
+  attachTip(onOff.control, "Group on / off", "Off: nothing in this group shows in play, whatever each overlay's own settings say — they're all kept, ready to switch back on. Handy for keeping a whole set-up while you try another. (While these windows are open, the list's eyes decide what's on screen; switching this sets them too.)")
+  place(onOff, 190, 0)
   local function gnum(field) return function() local g = CurrentGroup(); return (g and g[field]) or 0 end end
   local function gset(field) return function(v)
     local g = CurrentGroup(); if not g then return end
@@ -1218,8 +1255,8 @@ local function buildGroup(parent)
     function(v) local g = CurrentGroup(); if g then g.hideWithAnchor = v or nil; GloomsOverlays_ApplyAll() end end)
   attachTip(hideW.control, "Hide with its frame", "On: the group shows only while the frame it's attached to does — target decorations disappear with the target frame. (While these windows are open, the list's eyes decide instead.)")
   place(attach, 0, 41); place(hideW, 190, 41)
-  local x = Dial(f, 170, { label = "Horizontal Position", min = -1500, max = 1500, step = 1, unit = "px", dragPx = 1600, get = gnum("x"), set = gset("x") })
-  local y = Dial(f, 170, { label = "Vertical Position", min = -1500, max = 1500, step = 1, unit = "px", dragPx = 1600, get = gnum("y"), set = gset("y") })
+  local x = Dial(f, 170, { fine = true, label = "Horizontal Position", min = -1500, max = 1500, step = 1, unit = "px", dragPx = 1600, get = gnum("x"), set = gset("x") })
+  local y = Dial(f, 170, { fine = true, label = "Vertical Position", min = -1500, max = 1500, step = 1, unit = "px", dragPx = 1600, get = gnum("y"), set = gset("y") })
   attachTip(x.strip, "The group's anchor", "Moves every overlay in the group together — from the middle of the screen, or from the attached frame's center. Each overlay's own position is measured from here. The arrow keys nudge it 1 pixel (Shift: 10) while this section is open.")
   place(x, 0, 82); place(y, 190, 82)
   local scale = Dial(f, 170, { label = "Scale", min = 10, max = 400, step = 1, unit = "%", dragPx = 800,
@@ -1250,7 +1287,7 @@ local function buildGroup(parent)
     rows[i] = r
     return r
   end
-  s.ctrls = { nameF, attach, hideW, x, y, scale }
+  s.ctrls = { nameF, onOff, attach, hideW, x, y, scale }
   s.refresh = function()
     local g = CurrentGroup()
     local on = s:base(g ~= nil)
@@ -1388,6 +1425,7 @@ function GloomsOverlays_SetTextureField(text, sheet)
   if not ov or IsPortrait(ov) then return false end
   ov.sheet = sheet   -- the browser's grid (nil = a still texture)
   LiveApply("texture", (text or ""):match("^%s*(.-)%s*$"))
+  FitToImage(ov)
   P.refreshAll()
   if P.texField then P.texField:SetText(text or "") end
   P.renderList()
@@ -1402,6 +1440,7 @@ function GloomsOverlays_SaveFromPreview(textureInput, sheetData)
   local list = Overlays()
   local ov = NewOverlay("New Texture " .. (#list + 1), textureInput, sheetData)
   list[#list + 1] = ov
+  FitToImage(ov)
   GloomsOverlays_ApplyAll()
   GloomsHub:Open("overlays")
   Select(ov)

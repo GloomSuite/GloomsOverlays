@@ -264,6 +264,17 @@ function GloomsOverlays_SetEye(ov, on)
     if ov == pick then pickShow = on and true or false else ov.preview = on and true or nil end
 end
 
+-- ★ A GROUP CAN BE SWITCHED OFF (2026-09-30, the owner: "create a group that is
+-- an entire UI setup... and then just disable it to create/try out another one,
+-- without having to screw around with profiles"). `g.enabled == false` does to
+-- every member what an overlay's own Off does: never shown in play, settings
+-- kept; while the windows are open the eyes still decide (Previewed), exactly
+-- like a switched-off overlay. nil = on, so every existing group stays on.
+function GloomsOverlays_GroupOff(ov)
+    local g = ov and ov.group and GloomsOverlays_FindGroup(ov.group)
+    return g ~= nil and g.enabled == false
+end
+
 -- an attached group set to show only with its frame
 local function AnchorHides(ov)
     local g = ov.group and GloomsOverlays_FindGroup(ov.group)
@@ -473,7 +484,7 @@ function GloomsOverlays_ApplyAll()
     -- ★ Keyed by the overlay's TABLE, not its name: two overlays may share a name.
     local n, pn = 0, 0
     for _, ov in ipairs(profile.overlays) do
-        if ov.enabled ~= false or Previewed(ov) then
+        if (ov.enabled ~= false and not GloomsOverlays_GroupOff(ov)) or Previewed(ov) then
             if ov.kind == "portrait" then
                 if addon.PR then
                     pn = pn + 1
@@ -580,13 +591,10 @@ local function MakeHandle(r, g, b, level)
     local h = CreateFrame("Frame", nil, UIParent)
     h:SetFrameStrata("HIGH"); h:SetFrameLevel(level)
     h:EnableMouse(true); h:Hide()
-    local fill = h:CreateTexture(nil, "BACKGROUND"); fill:SetAllPoints(); fill:SetColorTexture(r, g, b, 0.08)
-    local function edge(p1, p2, horiz)
-        local t = h:CreateTexture(nil, "OVERLAY"); t:SetColorTexture(r, g, b, 0.9)
-        t:SetPoint(p1); t:SetPoint(p2); if horiz then t:SetHeight(1) else t:SetWidth(1) end
-    end
-    edge("TOPLEFT", "TOPRIGHT", true); edge("BOTTOMLEFT", "BOTTOMRIGHT", true)
-    edge("TOPLEFT", "BOTTOMLEFT"); edge("TOPRIGHT", "BOTTOMRIGHT")
+    -- ★ CORNER BRACKETS, 10 px outside (2026-09-30, the owner: the box "is
+    -- actually in the way" of precise positioning) — the Hub's UI.gBrackets. The
+    -- handle keeps the item's own size, so the drag area is unchanged.
+    GloomsHub.UI.gBrackets(h, r, g, b, 0.9)
     -- h.target() → the table whose x/y the drag writes; h.apply(t) re-places it
     local function finish(self)
         self:SetScript("OnUpdate", nil)
@@ -805,7 +813,8 @@ SlashCmdList["GLOOMSOVERLAYS"] = function(msg)
         local overlays = profile and profile.overlays or {}
         print("|cff936bffGloom's UI|r — profile: |cffcccccc" .. GloomsOverlays_GetActiveProfileName() .. "|r — " .. #overlays .. " overlay(s):")
         for i, ov in ipairs(overlays) do
-            local state = (ov.enabled ~= false) and "|cff00ff00on|r" or "|cffaaaaaa off|r"
+            local state = (ov.enabled == false) and "|cffaaaaaa off|r"
+                or GloomsOverlays_GroupOff(ov) and "|cffaaaaaa group off|r" or "|cff00ff00on|r"
             print(string.format("  %d. %s%s [%s]", i, ov.name or "?", ov.kind == "portrait" and " (portrait)" or "", state))
         end
 
