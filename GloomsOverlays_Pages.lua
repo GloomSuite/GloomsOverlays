@@ -1156,8 +1156,9 @@ end
 
 -- ===========================================================================
 -- SECTION · VISIBILITY — the overlay's on/off, then the conditions as
--- checkboxes, two columns 26 apart: it shows while ANY checked one is true. A
--- target portrait also needs a target.
+-- checkboxes, two columns 26 apart: it shows while ANY checked one is true, or
+-- ALL of them (Show When, `ov.condMatch`, 2026-10-01). A target portrait also
+-- needs a target.
 -- ===========================================================================
 local COND = {
   { "always", "Always Visible" }, { "combat", "In Combat" }, { "nocombat", "Out of Combat" },
@@ -1170,6 +1171,12 @@ local function buildVisibility(parent)
     function(v) LiveApply("enabled", v and true or false); P.refreshAll() end)
   attachTip(onOff.control, "On / off", "Off: it never shows in play, whatever the conditions below say; its settings are kept. (While these windows are open, the list's eyes decide what's on screen instead.)")
   place(onOff, 0, 0)
+  local match = Switch(f, "Show When", 170, { { "any", "Any" }, { "all", "All" } },
+    function() local ov = CurrentOverlay(); return (ov and ov.condMatch == "all") and "all" or "any" end,
+    function(v) LiveApply("condMatch", v == "all" and "all" or nil); s.refresh() end)
+  attachTip(match.control, "Show when", "Any: it shows while at least one checked condition is true. All: only while every checked condition is true at once — In Combat plus Target Selected, say, shows it only in combat with a target.")
+  place(match, 190, 0)
+  local function matchWord() local ov = CurrentOverlay(); return (ov and ov.condMatch == "all") and "ALL checked conditions are" or "ANY checked condition is" end
   local note = Note(f, "Shows while ANY checked condition is true.")
   note:SetPoint("TOPLEFT", 0, -46)
   local function conditionSet()
@@ -1189,11 +1196,29 @@ local function buildVisibility(parent)
       LiveApply("condition", #parts > 0 and table.concat(parts, ",") or "always")
       s.refresh()
     end)
-    local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
-    chk:SetPoint("TOPLEFT", col * 190, -(66 + row * 26))
     checks[i] = chk
   end
-  s.ctrls = { onOff }
+  -- Hide When Mounted (2026-10-04, the owner): a rule OVER the conditions, so a
+  -- switch of its own under them rather than another checkbox among them
+  local mounted = Switch(f, "Hide When Mounted", 170, { { false, "Off" }, { true, "On" } },
+    function() local ov = CurrentOverlay(); return (ov and ov.hideMounted) and true or false end,
+    function(v) LiveApply("hideMounted", v and true or nil); s.refresh() end)
+  attachTip(mounted.control, "Hide when mounted", "On: hidden whenever you're on a mount, whatever the conditions above say. (While these windows are open, the list's eyes decide instead.)")
+  -- The checkboxes sit 10 under the note, however many lines it wraps to (the
+  -- owner, 2026-10-04: a two-line note all but touched them); the switch 20
+  -- under the last row; the section fits to it.
+  local function layout()
+    local top = 46 + math.ceil(note:GetStringHeight()) + 10
+    for i, chk in ipairs(checks) do
+      local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
+      chk:ClearAllPoints(); chk:SetPoint("TOPLEFT", col * 190, -(top + row * 26))
+    end
+    local rows = math.ceil(#checks / 2)
+    local y = top + (rows - 1) * 26 + 16 + 20
+    place(mounted, 0, y)
+    s:fit(y + 31)
+  end
+  s.ctrls = { onOff, match, mounted }
   for _, chk in ipairs(checks) do s.ctrls[#s.ctrls + 1] = chk end
   s.refresh = function()
     local on = s:base()
@@ -1201,9 +1226,13 @@ local function buildVisibility(parent)
     onOff.label:SetText(IsPortrait(ov) and "Portrait" or "Overlay")
     local live = on and ov.enabled ~= false
     for _, chk in ipairs(checks) do chk:setEnabled(live) end
+    match:setEnabled(live)
+    mounted:setEnabled(live)
     local target = IsPortrait(ov) and ov.unit == "target"
-    note:SetText(target and "Shows while ANY checked condition is true — and only while you have a target." or "Shows while ANY checked condition is true.")
+    local line = "Shows while " .. matchWord() .. " true"
+    note:SetText(target and (line .. " — and only while you have a target.") or (line .. "."))
     note:SetAlpha(live and 1 or DIM)
+    layout()
   end
   return f
 end
@@ -1268,9 +1297,41 @@ local function buildGroup(parent)
     end })
   attachTip(scale.strip, "Scale", "Makes every overlay in the group bigger or smaller together — their sizes and the spaces between them — around the group's anchor. Each keeps its own size setting; this multiplies it.")
   place(scale, 0, 123)
-  local head = UI.gLabel(f, "Members"); head:SetPoint("TOPLEFT", 0, -164)
+  -- ★ THE GROUP'S VISIBILITY (2026-10-04, the owner): the same conditions as an
+  -- overlay's, as a gate in front of every member — a member shows only while
+  -- the group's AND its own pass. Nothing ticked = the group gates nothing.
+  local vhead = UI.gLabel(f, "Group Visibility", 12, LILAC); vhead:SetPoint("TOPLEFT", 0, -164)
+  local gmatch = Switch(f, "Show When", 170, { { "any", "Any" }, { "all", "All" } },
+    function() local g = CurrentGroup(); return (g and g.condMatch == "all") and "all" or "any" end,
+    function(v) local g = CurrentGroup(); if not g then return end; g.condMatch = (v == "all") and "all" or nil; GloomsOverlays_ApplyAll(); s.refresh() end)
+  attachTip(gmatch.control, "Show when", "Any: the group lets its overlays show while at least one ticked condition is true. All: only while every ticked condition is true at once.")
+  local gmount = Switch(f, "Hide When Mounted", 170, OFFON,
+    function() local g = CurrentGroup(); return (g and g.hideMounted) and true or false end,
+    function(v) local g = CurrentGroup(); if not g then return end; g.hideMounted = v or nil; GloomsOverlays_ApplyAll() end)
+  attachTip(gmount.control, "Hide when mounted", "On: everything in this group hides while you're mounted, whatever each overlay's own settings say.")
+  place(gmatch, 0, 186); place(gmount, 190, 186)
+  local vnote = Note(f, "")
+  vnote:SetPoint("TOPLEFT", 0, -232)
+  local function gset2()
+    local g = CurrentGroup(); local set = {}
+    for word in ((g and g.condition) or ""):gmatch("[^,]+") do set[word] = true end
+    return set
+  end
+  local gchecks = {}
+  for i, c in ipairs(COND) do
+    local key = c[1]
+    gchecks[i] = UI.gCheck(f, c[2], function() return gset2()[key] == true end, function(v)
+      local g = CurrentGroup(); if not g then return end
+      local set = gset2(); set[key] = v or nil
+      local parts = {}
+      for _, cc in ipairs(COND) do if set[cc[1]] then parts[#parts + 1] = cc[1] end end
+      g.condition = (#parts > 0) and table.concat(parts, ",") or nil
+      GloomsOverlays_ApplyAll(); s.refresh()
+    end)
+    attachTip(gchecks[i], c[2], "Ticked: the group's overlays may show only while this is true (with Any, while at least one ticked condition is). Each overlay's own conditions still apply on top.")
+  end
+  local head = UI.gLabel(f, "Members")
   local empty = Note(f, "No overlays in this group yet. Drag one onto the group in the list, or select this group and click New Texture or New Portrait.")
-  empty:SetPoint("TOPLEFT", 0, -179)
   local rows = {}
   local function memberRow(i)
     local r = rows[i]
@@ -1287,23 +1348,39 @@ local function buildGroup(parent)
     rows[i] = r
     return r
   end
-  s.ctrls = { nameF, onOff, attach, hideW, x, y, scale }
+  s.ctrls = { nameF, onOff, attach, hideW, x, y, scale, gmatch, gmount }
+  for _, c in ipairs(gchecks) do s.ctrls[#s.ctrls + 1] = c end
   s.refresh = function()
     local g = CurrentGroup()
     local on = s:base(g ~= nil)
-    head:SetAlpha(on and 1 or DIM)
+    head:SetAlpha(on and 1 or DIM); vhead:SetAlpha(on and 1 or DIM)
+    -- the visibility note, then the checkboxes 10 under it, then the members
+    local any = g and g.condition
+    vnote:SetText(not any and "Nothing ticked: the group doesn't limit its overlays — each follows its own Visibility."
+      or ("Its overlays may show only while " .. ((g.condMatch == "all") and "ALL ticked conditions are" or "ANY ticked condition is")
+          .. " true — and their own conditions still apply."))
+    vnote:SetAlpha(on and 1 or DIM)
+    local top = 232 + math.ceil(vnote:GetStringHeight()) + 10
+    for i, chk in ipairs(gchecks) do
+      local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
+      chk:ClearAllPoints(); chk:SetPoint("TOPLEFT", col * 190, -(top + row * 26))
+    end
+    local mtop = top + (math.ceil(#gchecks / 2) - 1) * 26 + 16 + 24
+    head:ClearAllPoints(); head:SetPoint("TOPLEFT", 0, -mtop)
+    local rtop = mtop + 15
+    empty:ClearAllPoints(); empty:SetPoint("TOPLEFT", 0, -rtop)
     local members = g and GloomsOverlays_GroupMembers(g) or {}
     for i, ov in ipairs(members) do
       local r = memberRow(i)
       r.ov = ov
       rowPicture(r.pic, ov)
       r.name:SetText(ov.name or "Overlay")
-      r:ClearAllPoints(); r:SetPoint("TOPLEFT", 0, -(179 + (i - 1) * LIST_ROW_H)); r:Show()
+      r:ClearAllPoints(); r:SetPoint("TOPLEFT", 0, -(rtop + (i - 1) * LIST_ROW_H)); r:Show()
     end
     for i = #members + 1, #rows do rows[i]:Hide(); rows[i].ov = nil end
     empty:SetShown(#members == 0); empty:SetAlpha(on and 1 or DIM)
     hideW:setEnabled(on and g.attach ~= nil)
-    s:fit(179 + ((#members > 0) and (#members * LIST_ROW_H) or math.ceil(empty:GetStringHeight())))
+    s:fit(rtop + ((#members > 0) and (#members * LIST_ROW_H) or math.ceil(empty:GetStringHeight())))
   end
   return f
 end

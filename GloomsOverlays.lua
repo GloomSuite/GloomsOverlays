@@ -283,6 +283,23 @@ local function AnchorHides(ov)
     return f ~= nil and not f:IsVisible()
 end
 
+-- ANY (the default) passes while one checked condition is true; ALL only while
+-- every one is (`condMatch = "all"`, 2026-10-01, the owner). Always Visible is
+-- simply true, so under All it asks nothing of the others. Used by an overlay
+-- and by its group alike.
+local function CondPass(c, all)
+    for word in c:gmatch("[^,]+") do
+        local met = word == "always"
+            or (word == "combat"   and inCombat)
+            or (word == "nocombat" and not inCombat)
+            or (word == "target"   and hasTarget)
+            or (word == "casting"  and isCasting)
+        if met and not all then return true end
+        if not met and all then return false end
+    end
+    return all
+end
+
 local function ShouldShow(ov)
     -- ★ While the windows are open the EYE decides, both ways (2026-09-29, the
     -- owner: "when the eye is off and the addon is open, the aura is NOT
@@ -292,15 +309,18 @@ local function ShouldShow(ov)
     -- conditions below.
     if previewing then return GloomsOverlays_EyeOn(ov) end
     if AnchorHides(ov) then return false end
-    local c = ov.condition or "always"
-    for word in c:gmatch("[^,]+") do
-        if word == "always"   then return true end
-        if word == "combat"   and inCombat      then return true end
-        if word == "nocombat" and not inCombat  then return true end
-        if word == "target"   and hasTarget     then return true end
-        if word == "casting"  and isCasting     then return true end
+    -- Hide When Mounted (2026-10-04, the owner): wins over every condition below
+    if ov.hideMounted and IsMounted and IsMounted() then return false end
+    -- ★ THE GROUP'S VISIBILITY (2026-10-04, the owner): a gate IN FRONT of each
+    -- member — it can only narrow, never widen (Auras' group load rule). A member
+    -- shows only while its group's conditions AND its own both pass; either one
+    -- hides it. A group that never set any (condition nil) gates nothing.
+    local g = ov.group and GloomsOverlays_FindGroup(ov.group)
+    if g then
+        if g.hideMounted and IsMounted and IsMounted() then return false end
+        if g.condition and not CondPass(g.condition, g.condMatch == "all") then return false end
     end
-    return false
+    return CondPass(ov.condition or "always", ov.condMatch == "all")
 end
 
 -- ============================================================
@@ -714,6 +734,7 @@ mainFrame:RegisterEvent("PLAYER_LOGIN")
 mainFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 mainFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 mainFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+mainFrame:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")   -- mounting / dismounting (Hide When Mounted)
 mainFrame:RegisterEvent("UNIT_SPELLCAST_START")
 mainFrame:RegisterEvent("UNIT_SPELLCAST_STOP")
 mainFrame:RegisterEvent("UNIT_SPELLCAST_FAILED")
@@ -754,6 +775,9 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
 
     elseif event == "PLAYER_REGEN_ENABLED" then
         inCombat = false
+        UpdateVisibility()
+
+    elseif event == "PLAYER_MOUNT_DISPLAY_CHANGED" then
         UpdateVisibility()
 
     elseif event == "PLAYER_TARGET_CHANGED" then

@@ -94,6 +94,13 @@ globals ever *do* get renamed, it needs a real migration shim, not a find-and-re
   Texture field's Browse and Browse Assets open it. `ov.sheet` (a spritesheet's grid) is set in
   Overlay & Texture → Spritesheet or carried in by the browser.
 
+- **Visibility (2026-10-01 → 04):** **Show When** Any | All (`condMatch = "all"`); **Hide When
+  Mounted** (`hideMounted`, PLAYER_MOUNT_DISPLAY_CHANGED) wins over the conditions; the checkboxes sit
+  under the note however it wraps. **A GROUP has the same** (`g.condition` — nil = gates nothing —
+  `g.condMatch`, `g.hideMounted`) as a GATE in front of every member: a member shows only while its
+  group's AND its own conditions pass (Auras' group-load rule; the owner agreed 2026-10-04). Engine:
+  `CondPass` in `GloomsOverlays.lua`.
+
 ## The windows (2026-09-27, the two-window design) — `GloomsOverlays_Pages.lua`
 
 The settings are **`GloomsOverlays_Pages.lua`** (`SKIN_NEEDS = 17`), built without a mock from the
