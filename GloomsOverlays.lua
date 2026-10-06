@@ -244,6 +244,9 @@ local previewing, pick, pickShow = false, nil, true
 function GloomsOverlays_EyeOn(ov)
     if not ov then return false end
     if ov == pick then return pickShow end
+    -- a multi-selection's members show while they're being moved (2026-10-06)
+    local m = GloomsOverlays_Multi and GloomsOverlays_Multi()
+    if m then for _, x in ipairs(m) do if x == ov then return true end end end
     return ov.preview == true
 end
 local function Previewed(ov) return previewing and GloomsOverlays_EyeOn(ov) end
@@ -436,22 +439,22 @@ local function BuildOverlayFrame(ov, index)
         local cw, rh = uRange / cols, vRange / rows
         tex:SetTexCoord(sh.uLeft, sh.uLeft + cw, sh.vTop, sh.vTop + rh)
 
-        local fps      = sh.fps or 15
-        local frameDur = 1 / math.max(1, fps)
-        local total    = math.max(1, math.min(sh.frames or (cols * rows), cols * rows))
-        local elapsed, frame = 0, 0
-
+        -- which frame, from the Hub's ONE timing (Forward / Reverse / eased
+        -- Ping-Pong — GloomsHub:SheetFrame, 2026-10-06)
+        local elapsed, shown = 0, -1
+        local function show(frame)
+            if frame == shown then return end
+            shown = frame
+            local col = frame % cols
+            local row = math.floor(frame / cols)
+            tex:SetTexCoord(
+                sh.uLeft + col       * cw, sh.uLeft + (col + 1) * cw,
+                sh.vTop  + row       * rh, sh.vTop  + (row + 1) * rh)
+        end
+        show(GloomsHub:SheetFrame(sh, 0))
         f:SetScript("OnUpdate", function(_, dt)
             elapsed = elapsed + dt
-            if elapsed >= frameDur then
-                elapsed = elapsed - frameDur
-                frame   = (frame + 1) % total
-                local col = frame % cols
-                local row = math.floor(frame / cols)
-                tex:SetTexCoord(
-                    sh.uLeft + col       * cw, sh.uLeft + (col + 1) * cw,
-                    sh.vTop  + row       * rh, sh.vTop  + (row + 1) * rh)
-            end
+            show(GloomsHub:SheetFrame(sh, elapsed))
         end)
     else
         local ul, ur, ut, ub = 0, 1, 0, 1
@@ -752,6 +755,81 @@ function GloomsOverlays_Nudge(t, dx, dy)
         GloomsOverlays_ApplyLayout(t)
     end
     for _, fn in ipairs(moveListeners) do fn(true) end
+end
+
+-- ★ MULTI-SELECT (2026-10-06, the owner — Auras has the same): shift-click in
+-- the list builds a set; with two or more, LIME brackets round all of them move
+-- them together (each by the same screen distance, ÷ its own group's scale),
+-- and the arrow keys nudge them all. Their settings dim meanwhile.
+local multi, multiHandle
+local function MultiLive()
+    local out = {}
+    for _, ov in ipairs(multi or {}) do if InProfile(ov) then out[#out + 1] = ov end end
+    return out
+end
+local function RefreshMulti()
+    local list = MultiLive()
+    if #list < 2 then
+        if multiHandle and not multiHandle.moving then multiHandle:Hide() end
+        return
+    end
+    if not multiHandle then
+        local h = CreateFrame("Frame", nil, UIParent)
+        h:SetFrameStrata("HIGH"); h:SetFrameLevel(102)
+        h:EnableMouse(true); h:Hide()
+        GloomsHub.UI.gBrackets(h, 0.44, 0.93, 0.25, 0.9)
+        local function finish(self)
+            self:SetScript("OnUpdate", nil)
+            if not self.moving then return end
+            self.moving = false
+            for _, fn in ipairs(moveListeners) do fn() end
+            RefreshMulti()
+        end
+        h:SetScript("OnMouseDown", function(self, button)
+            if button ~= "LeftButton" then return end
+            local cx, cy = Cursor()
+            local start = {}
+            for _, ov in ipairs(MultiLive()) do
+                local g = ov.group and GloomsOverlays_FindGroup(ov.group)
+                start[ov] = { ov.x or 0, ov.y or 0, (g and g.scale) or 1 }
+            end
+            self.moving = true
+            self:SetScript("OnUpdate", function(me)
+                if not IsMouseButtonDown("LeftButton") then finish(me); return end
+                local x, y = Cursor()
+                for ov, st in pairs(start) do
+                    ov.x = math.floor(st[1] + (x - cx) / st[3] + 0.5)
+                    ov.y = math.floor(st[2] + (y - cy) / st[3] + 0.5)
+                    GloomsOverlays_ApplyLayout(ov)
+                end
+                RefreshMulti(); RefreshHandles()
+                for _, fn in ipairs(moveListeners) do fn(true) end
+            end)
+        end)
+        h:SetScript("OnMouseUp", function(self) finish(self) end)
+        multiHandle = h
+    end
+    local l, r, b, t
+    for _, ov in ipairs(list) do
+        local x, y = GloomsOverlays_Pos(ov)
+        local w, hh = GloomsOverlays_BoxSize(ov)
+        l = math.min(l or math.huge, x - w / 2); r = math.max(r or -math.huge, x + w / 2)
+        b = math.min(b or math.huge, y - hh / 2); t = math.max(t or -math.huge, y + hh / 2)
+    end
+    multiHandle:SetSize(r - l + 8, t - b + 8)
+    multiHandle:ClearAllPoints()
+    multiHandle:SetPoint("CENTER", UIParent, "CENTER", (l + r) / 2, (b + t) / 2)
+    multiHandle:Show()
+end
+-- the windows' multi-selection (nil / fewer than 2 = none); its members show on screen
+function GloomsOverlays_SetMulti(list)
+    multi = (list and #list >= 2) and list or nil
+    RefreshMulti()
+end
+function GloomsOverlays_Multi() return multi end
+function GloomsOverlays_NudgeMulti(dx, dy)
+    for _, ov in ipairs(MultiLive()) do GloomsOverlays_Nudge(ov, dx, dy) end
+    RefreshMulti()
 end
 
 -- The windows call this on every selection, and with nothing when they close.

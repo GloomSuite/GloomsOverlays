@@ -101,6 +101,14 @@ globals ever *do* get renamed, it needs a real migration shim, not a find-and-re
   group's AND its own conditions pass (Auras' group-load rule; the owner agreed 2026-10-04). Engine:
   `CondPass` in `GloomsOverlays.lua`.
 
+## ★ 2026-10-06 — flipbook Direction, multi-select, reorder
+- **Direction** on the Spritesheet block (`ov.sheet.dir`); playback = the Hub's `GloomsHub:SheetFrame`.
+- **Multi-select**: shift-click (`toggleMulti`); `GloomsOverlays_SetMulti / Multi / NudgeMulti` — lime
+  brackets move the set (÷ each member's group scale); the eye shows members; a list drag carries the
+  set; any `Select` ends it. Hub BACKLOG 26 changes it next (edits to all; Shift = range, Alt = one).
+- **Reorder**: a drop on an item row lands before / after it — the profile's `overlays` ARRAY is the
+  order (`place()` in `P.itemDragStop`); a lilac `P.dropLine` shows where.
+
 ## ★ 2026-10-05 — what a group adds to a member's Visibility
 `GloomsOverlays_GroupRuleWords(g)` (nil when the group limits nothing — an "Always Visible" under Any
 counts as nothing) and `GloomsOverlays_NeverShows(ov)` (EXACT: tries all eight combat / target /

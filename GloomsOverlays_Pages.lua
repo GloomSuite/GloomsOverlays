@@ -171,8 +171,8 @@ end
 
 -- A spritesheet for a texture — the Hub's builder (GloomsHub:SheetFor, the
 -- texture browser's home since 2026-09-29): nil for a still (1 x 1) texture.
-function GloomsOverlays_SheetFor(texture, cols, rows, frames, fps)
-  return GloomsHub:SheetFor(texture, cols, rows, frames, fps)
+function GloomsOverlays_SheetFor(texture, cols, rows, frames, fps, dir)
+  return GloomsHub:SheetFor(texture, cols, rows, frames, fps, dir)
 end
 
 -- ---------------------------------------------------------------------------
@@ -216,7 +216,30 @@ local function recallPick()
   return lp.index and Overlays()[lp.index] or nil, nil
 end
 
-local function Select(ov, g)
+-- ★ MULTI-SELECT (2026-10-06): shift-click builds a set; two or more move
+-- together (lime brackets, arrow keys) and drag into a group together; the
+-- settings dim. Any plain selection ends it.
+local function Multi() return GloomsOverlays_Multi and GloomsOverlays_Multi() or nil end
+local function InMulti(ov) for _, m in ipairs(Multi() or {}) do if m == ov then return true end end return false end
+local Select
+local function toggleMulti(ov)
+  local list = {}
+  for _, m in ipairs(Multi() or {}) do list[#list + 1] = m end
+  if #list == 0 and CurrentOverlay() then list[1] = CurrentOverlay() end
+  local found
+  for i, m in ipairs(list) do if m == ov then table.remove(list, i); found = true; break end end
+  if not found then list[#list + 1] = ov end
+  if #list >= 2 then
+    Select(nil, nil)
+    GloomsOverlays_SetMulti(list)
+    GloomsOverlays_ApplyAll(); P.refreshAll()
+  else
+    Select(list[1], nil)
+  end
+end
+
+Select = function(ov, g)
+  if GloomsOverlays_SetMulti then GloomsOverlays_SetMulti(nil) end   -- a selection ends a multi-select
   local d = GloomsHubDB and GloomsHubDB.win and GloomsHubDB.win.overlays
   local before, k0 = d and d.open, Kind()
   selItem = ov
@@ -542,15 +565,16 @@ local function listRow(i)
     return "While these windows are open, only overlays with a lit eye are on screen — lit shows it whatever its Visibility says, unlit hides it, even if it's Always Visible — so you can place things without the rest in the way. The one you select shows while it's selected — click its eye to hide it for now; once you select another, it goes back to its own eye. Closing the windows hands everything back to its Visibility."
   end)
   r:SetScript("OnEnter", function(self)
-    local sel = (self.kind == "item" and self.ov == CurrentOverlay()) or (self.kind == "group" and self.group == CurrentGroup())
+    local sel = (self.kind == "item" and (self.ov == CurrentOverlay() or InMulti(self.ov))) or (self.kind == "group" and self.group == CurrentGroup())
     if (self.kind == "item" or self.kind == "group") and not sel then self.hl:SetColorTexture(VIOLET.r, VIOLET.g, VIOLET.b, 0.15); self.hl:Show() end
   end)
   r:SetScript("OnLeave", function(self)
-    local sel = (self.kind == "item" and self.ov == CurrentOverlay()) or (self.kind == "group" and self.group == CurrentGroup())
+    local sel = (self.kind == "item" and (self.ov == CurrentOverlay() or InMulti(self.ov))) or (self.kind == "group" and self.group == CurrentGroup())
     if not sel then self.hl:Hide() end
   end)
   r:SetScript("OnClick", function(self, button)
     if self.kind == "item" and self.ov then
+      if button == "LeftButton" and IsShiftKeyDown() then toggleMulti(self.ov); return end
       Select(self.ov)
       if button == "RightButton" then P.overlayMenu(self) end
     elseif self.kind == "group" and self.group then
@@ -654,7 +678,7 @@ function P.renderList()
         r.name:SetAlpha((ov.enabled ~= false and not GloomsOverlays_GroupOff(ov)) and 1 or 0.5)
         r.eye:Show()
         if GloomsOverlays_EyeOn(ov) then UI.tint(r.eye.t, LIME) else r.eye.t:SetVertexColor(1, 1, 1, 0.4) end
-        if ov == selOv then r.hl:SetColorTexture(VIOLET.r, VIOLET.g, VIOLET.b, 0.3); r.hl:Show() end
+        if ov == selOv or InMulti(ov) then r.hl:SetColorTexture(VIOLET.r, VIOLET.g, VIOLET.b, 0.3); r.hl:Show() end
       end
       -- cap a name only when it is too long for its line (room kept for the warning)
       local warnText = (e.kind == "item") and GloomsOverlays_NeverShows(e.ov) or nil
@@ -697,13 +721,16 @@ local function dropTarget()
       if r.kind == "group" then return r.group, r end
       if r.kind == "ungrouped" then return "none", r end
       if r.kind == "item" and r.ov then
+        -- REORDER (2026-10-06): the row under the cursor and which half of it
+        local _, cy = GetCursorPosition(); cy = cy / r:GetEffectiveScale()
+        local before = cy > (((r:GetTop() or 0) + (r:GetBottom() or 0)) / 2)
         local g = GroupOf(r.ov)
         if g then
-          for _, h in ipairs(listRows) do if h:IsShown() and h.kind == "group" and h.group == g then return g, h end end
-          return g, nil
+          for _, h in ipairs(listRows) do if h:IsShown() and h.kind == "group" and h.group == g then return g, h, r, before end end
+          return g, nil, r, before
         end
-        for _, h in ipairs(listRows) do if h:IsShown() and h.kind == "ungrouped" then return "none", h end end
-        return "none", nil
+        for _, h in ipairs(listRows) do if h:IsShown() and h.kind == "ungrouped" then return "none", h, r, before end end
+        return "none", nil, r, before
       end
     end
   end
@@ -718,18 +745,31 @@ function P.itemDragStart(row)
     P.ghost = gh
   end
   gh:SetScale(row:GetEffectiveScale() / UIParent:GetEffectiveScale())
-  gh.text:SetText(row.ov.name or "Overlay")
+  local n = InMulti(row.ov) and #Multi() or 1
+  gh.text:SetText(n > 1 and (n .. " overlays") or (row.ov.name or "Overlay"))
   P.dragging = { ov = row.ov, row = row }
   row:SetAlpha(0.4)
   gh:SetScript("OnUpdate", function(self)
     local x, y = GetCursorPosition(); local sc = self:GetEffectiveScale()
     self:ClearAllPoints(); self:SetPoint("LEFT", UIParent, "BOTTOMLEFT", x / sc + 8, y / sc)
-    local _, head = dropTarget()
+    local _, head, over, before = dropTarget()
     if head ~= P.dropHead then
       if P.dropHead then P.renderList() end
       P.dropHead = head
       if head then head.hl:SetColorTexture(VIOLET.r, VIOLET.g, VIOLET.b, 0.4); head.hl:Show() end
     end
+    -- the line where it will land, between two items (2026-10-06)
+    if not P.dropLine then
+      P.dropLine = P.listClip:CreateTexture(nil, "OVERLAY"); P.dropLine:SetHeight(2)
+      P.dropLine:SetColorTexture(LILAC.r, LILAC.g, LILAC.b, 1)
+    end
+    local line = P.dropLine
+    line:ClearAllPoints()
+    if over then
+      if before then line:SetPoint("BOTTOMLEFT", over, "TOPLEFT", 0, 0); line:SetPoint("BOTTOMRIGHT", over, "TOPRIGHT", 0, 0)
+      else line:SetPoint("TOPLEFT", over, "BOTTOMLEFT", 0, 0); line:SetPoint("TOPRIGHT", over, "BOTTOMRIGHT", 0, 0) end
+      line:Show()
+    else line:Hide() end
   end)
   gh:Show()
 end
@@ -738,18 +778,42 @@ function P.itemDragStop()
   local d = P.dragging; P.dragging = nil
   if P.ghost then P.ghost:Hide(); P.ghost:SetScript("OnUpdate", nil) end
   P.dropHead = nil
+  if P.dropLine then P.dropLine:Hide() end
   if not d then return end
   d.row:SetAlpha(1)
-  local target = dropTarget()
+  local target, _, over, before = dropTarget()
   local ov = d.ov
+  -- THE ORDER is the profile's overlay list itself: the moved item(s) are
+  -- taken out and put back before / after the row they were dropped on (the
+  -- list shows each group's members in that order)
+  local function place(moved)
+    if not over or not over.ov then return end
+    for _, m in ipairs(moved) do if m == over.ov then return end end
+    local list = Overlays()
+    for _, m in ipairs(moved) do for i, o in ipairs(list) do if o == m then table.remove(list, i); break end end end
+    local at = #list + 1
+    for i, o in ipairs(list) do if o == over.ov then at = before and i or (i + 1); break end end
+    for k, m in ipairs(moved) do table.insert(list, at + k - 1, m) end
+  end
+  -- a row in the multi-selection carries the WHOLE set (2026-10-06)
+  if InMulti(ov) and target then
+    local set = {}
+    for _, m in ipairs(Multi()) do set[#set + 1] = m end
+    for _, m in ipairs(set) do GloomsOverlays_SetGroup(m, type(target) == "table" and target.id or nil) end
+    place(set)
+    GloomsOverlays_ApplyAll()
+    GloomsOverlays_SetMulti(set); P.refreshAll()
+    return
+  end
   local now = GroupOf(ov)
   if target == "none" and now then
     GloomsOverlays_SetGroup(ov, nil)
   elseif type(target) == "table" and target ~= now then
     GloomsOverlays_SetGroup(ov, target.id)
-  else
+  elseif not (target and over and over.ov ~= ov) then
     P.renderList(); return      -- dropped where it already was, or off the list
   end
+  place({ ov })
   GloomsOverlays_ApplyAll()
   Select(ov)
 end
@@ -816,7 +880,9 @@ local function buildTab(tab)
   attachTip(hit, "What you're editing", "Click to switch to another overlay or group. Right-click for its menu.")
   function t:refresh()
     local ov, g = CurrentOverlay(), CurrentGroup()
-    if ov then name:SetText(ov.name or "Overlay"); name:SetAlpha(1)
+    local m = Multi()
+    if m then name:SetText(#m .. " overlays selected — shift-click to add or drop"); name:SetAlpha(1)
+    elseif ov then name:SetText(ov.name or "Overlay"); name:SetAlpha(1)
     elseif g then name:SetText((g.name or "Group") .. "  (group)"); name:SetAlpha(1)
     else name:SetText("Nothing yet — click New Texture or New Portrait"); name:SetAlpha(0.6) end
     local maxW = 360 - 20 - math.ceil(lead:GetStringWidth())
@@ -834,7 +900,7 @@ end
 -- Blend Mode; Tint Color | Class Color.
 -- ===========================================================================
 local function buildTexture(parent)
-  local f, s = Section(parent, 271)
+  local f, s = Section(parent, 312)
   local nameF = NameField(f, "Overlay Name", CurrentOverlay, function(text) LiveApply("name", text) end)
   place(nameF, 0, 0)
   local texF = cell(f, "Texture", 294, function(c, w)
@@ -845,7 +911,7 @@ local function buildTexture(parent)
         local t = (text or ""):match("^%s*(.-)%s*$")
         -- a spritesheet keeps its grid, re-cut from the new file
         local sh = ov.sheet
-        if sh then ov.sheet = GloomsOverlays_SheetFor(t, sh.cols, sh.rows, sh.frames, sh.fps) end
+        if sh then ov.sheet = GloomsOverlays_SheetFor(t, sh.cols, sh.rows, sh.frames, sh.fps, sh.dir) end
         LiveApply("texture", t); FitToImage(ov); P.renderList(); s.refresh()
       end,
       revert = function(self) local ov = CurrentOverlay(); self:SetText(ov and ov.texture or "") end,
@@ -908,11 +974,12 @@ local function buildTexture(parent)
   -- SPRITESHEET: Columns | Rows, Frames | Speed. More than one column or row
   -- makes the texture a spritesheet; 1 x 1 is a still texture.
   local function sh() local ov = CurrentOverlay(); return ov and ov.sheet end
-  local function setSheet(cols, rows, frames, fps)
+  local function setSheet(cols, rows, frames, fps, dir)
     local ov = CurrentOverlay(); if not ov then return end
     local old = ov.sheet
+    if dir == nil then dir = old and old.dir end
     ov.sheet = GloomsOverlays_SheetFor(ov.texture, cols or (old and old.cols) or 1, rows or (old and old.rows) or 1,
-      frames or (old and old.frames), fps or (old and old.fps) or 15)
+      frames or (old and old.frames), fps or (old and old.fps) or 15, dir)
     -- a new grid shows every cell unless Frames was the one moved
     if ov.sheet and not frames and (cols or rows) then ov.sheet.frames = ov.sheet.cols * ov.sheet.rows end
     GloomsOverlays_ApplyAll(); P.renderList(); s.refresh()
@@ -928,8 +995,13 @@ local function buildTexture(parent)
     get = function() local x = sh(); return x and x.fps or 15 end, set = function(v) setSheet(nil, nil, nil, v) end })
   attachTip(colsD.strip, "Columns", "How many frames across the texture. More than one column or row plays the texture as an animation, frame by frame, left to right, then row by row. 1 x 1 = a still texture. The asset browser guesses these for an atlas.")
   attachTip(framesD.strip, "Frames", "How many of the cells to play — fewer than Columns x Rows when the last row isn't full.")
-  place(colsD, 0, 199); place(rowsD, 190, 199); place(framesD, 0, 240); place(fpsD, 190, 240)
-  s.ctrls = { nameF, texF, browse, alpha, blend, tint, cls, colsD, rowsD, framesD, fpsD }
+  -- DIRECTION (2026-10-06, the owner): Forward | Reverse | Ping-Pong, eased at each end
+  local dirS = Switch(f, "Direction", 360, { { "fwd", "Forward" }, { "rev", "Reverse" }, { "pong", "Ping-Pong" } },
+    function() local x = sh(); return (x and x.dir) or "fwd" end,
+    function(v) setSheet(nil, nil, nil, nil, (v ~= "fwd") and v or false) end)
+  attachTip(dirS.control, "Direction", "Forward plays the frames in order; Reverse plays them backward; Ping-Pong plays forward, then back — slowing into each end and easing out of it, so the turn isn't a jolt.")
+  place(colsD, 0, 199); place(rowsD, 190, 199); place(framesD, 0, 240); place(fpsD, 190, 240); place(dirS, 0, 281)
+  s.ctrls = { nameF, texF, browse, alpha, blend, tint, cls, colsD, rowsD, framesD, fpsD, dirS }
   s.refresh = function()
     local on = s:base()
     local ov = CurrentOverlay()
@@ -937,7 +1009,7 @@ local function buildTexture(parent)
     tint:setEnabled(on and not locked)
     head:SetAlpha(on and 1 or DIM)
     local anim = on and ov.sheet ~= nil
-    framesD:setEnabled(anim); fpsD:setEnabled(anim)
+    framesD:setEnabled(anim); fpsD:setEnabled(anim); dirS:setEnabled(anim)
   end
   return f
 end
@@ -1494,6 +1566,7 @@ GloomsHub:RegisterTab{
     P.windowsOpen = false
     GloomsHub:ClosePicker()
     GloomsOverlays_SetEditing(nil, nil)
+    GloomsOverlays_SetMulti(nil)
     if GloomsOverlays_SetPreview then GloomsOverlays_SetPreview(false) end
   end,
   refresh  = function() P.refreshAll() end,
@@ -1502,6 +1575,7 @@ GloomsHub:RegisterTab{
   -- ARROW KEYS (the Hub, 2026-09-30): the selected group while its Group
   -- section is open; the selected overlay while its Size & Position is
   nudge    = function(dx, dy, isOpen)
+    if Multi() then GloomsOverlays_NudgeMulti(dx, dy); return true end
     local g, ov = CurrentGroup(), CurrentOverlay()
     if g and isOpen("group") then GloomsOverlays_Nudge(g, dx, dy); return true end
     if ov and (isOpen("size") or isOpen("psize")) then GloomsOverlays_Nudge(ov, dx, dy); return true end
