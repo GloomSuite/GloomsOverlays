@@ -101,6 +101,12 @@ globals ever *do* get renamed, it needs a real migration shim, not a find-and-re
   group's AND its own conditions pass (Auras' group-load rule; the owner agreed 2026-10-04). Engine:
   `CondPass` in `GloomsOverlays.lua`.
 
+## ★ 2026-10-05 — what a group adds to a member's Visibility
+`GloomsOverlays_GroupRuleWords(g)` (nil when the group limits nothing — an "Always Visible" under Any
+counts as nothing) and `GloomsOverlays_NeverShows(ov)` (EXACT: tries all eight combat / target /
+casting states, a target portrait needs a target). The Visibility section shows a lime note, or a
+coral one when the member can never show / its group is off; the list line gets the coral warn icon.
+
 ## The windows (2026-09-27, the two-window design) — `GloomsOverlays_Pages.lua`
 
 The settings are **`GloomsOverlays_Pages.lua`** (`SKIN_NEEDS = 17`), built without a mock from the

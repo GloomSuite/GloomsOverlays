@@ -49,6 +49,7 @@ end
 
 local UI, COLOR, FONT = Skin.UI, Skin.COLOR, Skin.FONT
 local LIME, LILAC, VIOLET = COLOR.lime, COLOR.lilac, COLOR.violet
+local CORAL = COLOR.coral
 local DIM = UI.G_DIM or 0.3
 local attachTip = UI.attachTip
 local OFFON = { { false, "Off" }, { true, "On" } }
@@ -518,6 +519,11 @@ local function listRow(i)
   r.pic = r:CreateTexture(nil, "ARTWORK"); r.pic:SetSize(12, 12); r.pic:SetPoint("LEFT", 0, 0)
   r.name = UI.newText(r, FONT.sa, 10, COLOR.paper, "LEFT"); r.name:SetPoint("LEFT", 18, 0)
   r.name:SetWordWrap(false)
+  -- the warning: an overlay that can never show with its group (2026-10-05)
+  r.warn = CreateFrame("Button", nil, r); r.warn:SetSize(12, 12); r.warn:Hide()
+  local wt = r.warn:CreateTexture(nil, "ARTWORK"); wt:SetAllPoints()
+  wt:SetTexture(UI.G_WARN); wt:SetTexCoord(0, 12 / 16, 0, 12 / 16); UI.tint(wt, CORAL)
+  attachTip(r.warn, "Check this overlay", function() return r.warnText or "" end)
   r.eye = CreateFrame("Button", nil, r); r.eye:SetSize(14, 14); r.eye:SetPoint("RIGHT", 0, 0)
   r.eye.t = r.eye:CreateTexture(nil, "ARTWORK"); r.eye.t:SetSize(14, 8.5); r.eye.t:SetPoint("CENTER", 0, 0)
   r.eye.t:SetTexture(UI.G_EYE); r.eye.t:SetTexCoord(0, 56 / 64, 0, 34 / 64)
@@ -650,10 +656,14 @@ function P.renderList()
         if GloomsOverlays_EyeOn(ov) then UI.tint(r.eye.t, LIME) else r.eye.t:SetVertexColor(1, 1, 1, 0.4) end
         if ov == selOv then r.hl:SetColorTexture(VIOLET.r, VIOLET.g, VIOLET.b, 0.3); r.hl:Show() end
       end
-      -- cap a name only when it is too long for its line
-      local maxW = 200 - (e.kind == "item" and 18 or 12) - 20
+      -- cap a name only when it is too long for its line (room kept for the warning)
+      local warnText = (e.kind == "item") and GloomsOverlays_NeverShows(e.ov) or nil
+      r.warnText = warnText
+      local maxW = 200 - (e.kind == "item" and 18 or 12) - 20 - (warnText and 16 or 0)
       local w = math.ceil(r.name:GetStringWidth())
-      if w > maxW then r.name:SetWidth(maxW) end
+      if w > maxW then w = maxW; r.name:SetWidth(maxW) end
+      r.warn:Hide()
+      if warnText then r.warn:ClearAllPoints(); r.warn:SetPoint("LEFT", 18 + w + 4, 0); r.warn:Show() end
       r:Show()
     end
     y = y + h
@@ -1179,6 +1189,8 @@ local function buildVisibility(parent)
   local function matchWord() local ov = CurrentOverlay(); return (ov and ov.condMatch == "all") and "ALL checked conditions are" or "ANY checked condition is" end
   local note = Note(f, "Shows while ANY checked condition is true.")
   note:SetPoint("TOPLEFT", 0, -46)
+  -- what its GROUP adds, and a contradiction (2026-10-05)
+  local inh = Note(f, "")
   local function conditionSet()
     local ov = CurrentOverlay()
     local set = {}
@@ -1209,6 +1221,10 @@ local function buildVisibility(parent)
   -- under the last row; the section fits to it.
   local function layout()
     local top = 46 + math.ceil(note:GetStringHeight()) + 10
+    if inh:IsShown() then
+      inh:ClearAllPoints(); inh:SetPoint("TOPLEFT", 0, -(top - 4))
+      top = top - 4 + math.ceil(inh:GetStringHeight()) + 10
+    end
     for i, chk in ipairs(checks) do
       local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
       chk:ClearAllPoints(); chk:SetPoint("TOPLEFT", col * 190, -(top + row * 26))
@@ -1232,7 +1248,23 @@ local function buildVisibility(parent)
     local line = "Shows while " .. matchWord() .. " true"
     note:SetText(target and (line .. " — and only while you have a target.") or (line .. "."))
     note:SetAlpha(live and 1 or DIM)
+    local g = ov and ov.group and GloomsOverlays_FindGroup(ov.group)
+    local never = ov and GloomsOverlays_NeverShows(ov)
+    local words = g and GloomsOverlays_GroupRuleWords(g)
+    local text
+    if g and g.enabled == false then
+      text = ("Its group \"%s\" is switched off, so it never shows in play."):format(g.name or "Group")
+      inh:SetTextColor(CORAL.r, CORAL.g, CORAL.b)
+    elseif never then
+      text = never .. ("  Its group \"%s\" shows only while %s."):format(g.name or "Group", words or "?")
+      inh:SetTextColor(CORAL.r, CORAL.g, CORAL.b)
+    elseif words then
+      text = ("Also limited by its group \"%s\": only while %s. Both have to be true."):format(g.name or "Group", words)
+      inh:SetTextColor(LIME.r, LIME.g, LIME.b)
+    end
+    inh:SetText(text or ""); inh:SetShown(text ~= nil); inh:SetAlpha(1)
     layout()
+    if P.renderList then P.renderList() end   -- the list's warning follows
   end
   return f
 end
@@ -1303,7 +1335,7 @@ local function buildGroup(parent)
   local vhead = UI.gLabel(f, "Group Visibility", 12, LILAC); vhead:SetPoint("TOPLEFT", 0, -164)
   local gmatch = Switch(f, "Show When", 170, { { "any", "Any" }, { "all", "All" } },
     function() local g = CurrentGroup(); return (g and g.condMatch == "all") and "all" or "any" end,
-    function(v) local g = CurrentGroup(); if not g then return end; g.condMatch = (v == "all") and "all" or nil; GloomsOverlays_ApplyAll(); s.refresh() end)
+    function(v) local g = CurrentGroup(); if not g then return end; g.condMatch = (v == "all") and "all" or nil; GloomsOverlays_ApplyAll(); s.refresh(); P.renderList() end)
   attachTip(gmatch.control, "Show when", "Any: the group lets its overlays show while at least one ticked condition is true. All: only while every ticked condition is true at once.")
   local gmount = Switch(f, "Hide When Mounted", 170, OFFON,
     function() local g = CurrentGroup(); return (g and g.hideMounted) and true or false end,
@@ -1326,7 +1358,7 @@ local function buildGroup(parent)
       local parts = {}
       for _, cc in ipairs(COND) do if set[cc[1]] then parts[#parts + 1] = cc[1] end end
       g.condition = (#parts > 0) and table.concat(parts, ",") or nil
-      GloomsOverlays_ApplyAll(); s.refresh()
+      GloomsOverlays_ApplyAll(); s.refresh(); P.renderList()
     end)
     attachTip(gchecks[i], c[2], "Ticked: the group's overlays may show only while this is true (with Any, while at least one ticked condition is). Each overlay's own conditions still apply on top.")
   end

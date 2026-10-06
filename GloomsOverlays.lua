@@ -300,6 +300,53 @@ local function CondPass(c, all)
     return all
 end
 
+-- ★ WHAT THE GROUP ADDS (2026-10-05, the owner: a group's Visibility and a
+-- member's can disagree, and nothing on the member said so). There are only
+-- three states behind the conditions — combat, target, casting — so whether a
+-- member can EVER show with its group is answered exactly, by trying all eight.
+local COND_WORDS = { always = "Always Visible", combat = "In Combat", nocombat = "Out of Combat",
+                     target = "Target Selected", casting = "While Casting" }
+local function PassAt(c, all, st)
+    for word in c:gmatch("[^,]+") do
+        local met = word == "always" or (word == "combat" and st.combat) or (word == "nocombat" and not st.combat)
+            or (word == "target" and st.target) or (word == "casting" and st.casting)
+        if met and not all then return true end
+        if not met and all then return false end
+    end
+    return all
+end
+-- a group's Visibility in words (nil = it limits nothing)
+function GloomsOverlays_GroupRuleWords(g)
+    if not (g and g.condition) then return nil end
+    local all = g.condMatch == "all"
+    local o = {}
+    for word in g.condition:gmatch("[^,]+") do
+        -- Always Visible limits nothing: under Any it lets everything through,
+        -- under All it is simply true
+        if word == "always" then if not all then return nil end
+        else o[#o + 1] = COND_WORDS[word] or word end
+    end
+    if #o == 0 then return nil end
+    return table.concat(o, all and " and " or " or ")
+end
+-- why an overlay can never show with its group's Visibility (nil = it can)
+function GloomsOverlays_NeverShows(ov)
+    local g = ov and ov.group and GloomsOverlays_FindGroup(ov.group)
+    if not (g and g.condition) then return nil end
+    local needTarget = ov.kind == "portrait" and ov.unit == "target"
+    for _, combat in ipairs({ false, true }) do
+        for _, target in ipairs({ false, true }) do
+            for _, casting in ipairs({ false, true }) do
+                local st = { combat = combat, target = target, casting = casting }
+                if (target or not needTarget)
+                    and PassAt(g.condition, g.condMatch == "all", st)
+                    and PassAt(ov.condition or "always", ov.condMatch == "all", st) then return nil end
+            end
+        end
+    end
+    return "Never shows: its own Visibility and its group's can't both be true at once."
+end
+
 local function ShouldShow(ov)
     -- ★ While the windows are open the EYE decides, both ways (2026-09-29, the
     -- owner: "when the eye is off and the addon is open, the aura is NOT
